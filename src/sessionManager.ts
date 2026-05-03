@@ -21,6 +21,7 @@ export const STATUS_ORDER: SessionStatus[] = [
 export interface PersistedSession {
   name: string;
   cwd: string;
+  manuallyRenamed?: boolean;
 }
 
 export interface ClaudeSession {
@@ -30,6 +31,16 @@ export interface ClaudeSession {
   terminal: vscode.Terminal;
   startedAt: Date;
   status: SessionStatus;
+  /**
+   * Path to the JSONL log Claude Code is writing for this session, once
+   * the detector has claimed one. Undefined until then.
+   */
+  jsonlPath?: string;
+  /**
+   * True once the user has manually renamed via `rename()`. Pins the name —
+   * subsequent `ai-title` events from the JSONL detector will be ignored.
+   */
+  manuallyRenamed: boolean;
 }
 
 const NAME_ADJECTIVES = [
@@ -119,6 +130,7 @@ export class SessionManager {
       terminal,
       startedAt: new Date(),
       status: 'idle',
+      manuallyRenamed: false,
     };
     this.sessions.set(id, session);
     this.persist();
@@ -145,10 +157,34 @@ export class SessionManager {
     const session = this.sessions.get(id);
     if (!session) return;
     session.name = newName;
+    session.manuallyRenamed = true;
     // VS Code doesn't expose terminal renaming via API directly, but the
     // tree label will update on next refresh.
     this.persist();
     this._onDidChange.fire();
+  }
+
+  /**
+   * Apply a name derived from a Claude Code `ai-title` event. Skipped when
+   * the user has manually renamed (pinned) or the proposed name is unchanged.
+   */
+  autoRename(id: string, newName: string): void {
+    const session = this.sessions.get(id);
+    if (!session || session.manuallyRenamed) return;
+    if (session.name === newName) return;
+    session.name = newName;
+    this.persist();
+    this._onDidChange.fire();
+  }
+
+  /**
+   * Internal: detector calls this when it claims a JSONL file for a session.
+   */
+  setJsonlPath(id: string, jsonlPath: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.jsonlPath = jsonlPath;
+    // No event fire — purely internal bookkeeping.
   }
 
   async kill(id: string, opts: { confirm?: boolean } = {}): Promise<boolean> {
@@ -229,7 +265,8 @@ export class SessionManager {
     let created = 0;
     for (const r of records) {
       if (liveCwds.has(r.cwd)) continue;
-      this.create({ name: r.name, cwd: r.cwd });
+      const session = this.create({ name: r.name, cwd: r.cwd });
+      if (r.manuallyRenamed) session.manuallyRenamed = true;
       created++;
     }
     return created;
@@ -239,6 +276,7 @@ export class SessionManager {
     const records: PersistedSession[] = Array.from(this.sessions.values()).map((s) => ({
       name: s.name,
       cwd: s.cwd,
+      manuallyRenamed: s.manuallyRenamed || undefined,
     }));
     this.context.workspaceState.update(PERSIST_KEY, records);
   }

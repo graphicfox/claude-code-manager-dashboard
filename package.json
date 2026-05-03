@@ -157,6 +157,16 @@
             "Always restore saved sessions silently",
             "Never restore saved sessions"
           ]
+        },
+        "claudeCodeManager.autoStatus.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-detect session status (Idle/Busy/Question/Permission/Done) by tailing the JSONL logs Claude Code writes under ~/.claude/projects/."
+        },
+        "claudeCodeManager.autoRename.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-rename sessions to the task title that Claude Code derives, replacing the random initial name. Manual renames pin the name and disable further auto-renames for that session."
         }
       }
     }

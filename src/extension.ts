@@ -2,10 +2,13 @@ import * as vscode from 'vscode';
 import { SessionManager, STATUS_ORDER, SessionStatus } from './sessionManager';
 import { SessionWebviewProvider } from './sessionWebviewProvider';
 import { DashboardPanel } from './dashboard';
+import { StatusDetector } from './statusDetector';
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new SessionManager(context);
   const webviewProvider = new SessionWebviewProvider(context, manager);
+  const detector = new StatusDetector(manager);
+  context.subscriptions.push(detector);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
