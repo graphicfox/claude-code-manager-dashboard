@@ -3,12 +3,15 @@ import { SessionManager, STATUS_ORDER, SessionStatus } from './sessionManager';
 import { SessionWebviewProvider } from './sessionWebviewProvider';
 import { DashboardPanel } from './dashboard';
 import { StatusDetector } from './statusDetector';
+import { Notifier } from './notifier';
+import { listRecentSessions, pickRecentLabel } from './recentSessions';
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new SessionManager(context);
   const webviewProvider = new SessionWebviewProvider(context, manager);
   const detector = new StatusDetector(manager);
-  context.subscriptions.push(detector);
+  const notifier = new Notifier(manager, webviewProvider);
+  context.subscriptions.push(detector, notifier);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -175,6 +178,34 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('claudeCodeManager.openDashboard', () => {
       DashboardPanel.show(context, manager);
+    }),
+
+    vscode.commands.registerCommand('claudeCodeManager.resumeSession', async () => {
+      const folders = vscode.workspace.workspaceFolders;
+      const cwd = folders && folders.length > 0
+        ? folders[0].uri.fsPath
+        : process.env.HOME ?? process.cwd();
+      const recent = await listRecentSessions(cwd);
+      if (recent.length === 0) {
+        vscode.window.showInformationMessage(
+          `No prior Claude sessions found for ${cwd}.`
+        );
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        recent.map((s) => ({ ...pickRecentLabel(s), session: s })),
+        {
+          placeHolder: 'Resume a recent Claude session',
+          matchOnDescription: true,
+          matchOnDetail: true,
+        }
+      );
+      if (!pick) return;
+      manager.create({
+        cwd: pick.session.cwd,
+        resumeSessionId: pick.session.sessionId,
+        name: pick.session.title,
+      });
     }),
 
     vscode.commands.registerCommand('claudeCodeManager.restoreSessions', async () => {

@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as os from 'os';
 
 const PERSIST_KEY = 'claudeCodeManager.sessions.v1';
+const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 export type SessionStatus =
   | 'idle'
@@ -24,6 +27,16 @@ export interface PersistedSession {
   manuallyRenamed?: boolean;
 }
 
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  /** USD estimate based on the model's published rates; 0 if model unknown. */
+  costUsd: number;
+}
+
 export interface ClaudeSession {
   id: string;
   name: string;
@@ -41,6 +54,13 @@ export interface ClaudeSession {
    * subsequent `ai-title` events from the JSONL detector will be ignored.
    */
   manuallyRenamed: boolean;
+  usage: SessionUsage;
+}
+
+export interface SessionStatusChange {
+  id: string;
+  from: SessionStatus;
+  to: SessionStatus;
 }
 
 const NAME_ADJECTIVES = [
@@ -71,6 +91,8 @@ export class SessionManager {
   private sessions = new Map<string, ClaudeSession>();
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
+  private _onDidChangeStatus = new vscode.EventEmitter<SessionStatusChange>();
+  readonly onDidChangeStatus = this._onDidChangeStatus.event;
   private disposing = false;
 
   constructor(private context: vscode.ExtensionContext) {
@@ -101,7 +123,13 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
-  create(opts: { name?: string; cwd?: string; extraArgs?: string[] } = {}): ClaudeSession {
+  create(opts: {
+    name?: string;
+    cwd?: string;
+    extraArgs?: string[];
+    /** If set, spawns with `--resume <id>` to continue a prior conversation. */
+    resumeSessionId?: string;
+  } = {}): ClaudeSession {
     const config = vscode.workspace.getConfiguration('claudeCodeManager');
     const cliPath = config.get<string>('cliPath', 'claude');
     const defaultArgs = config.get<string[]>('defaultArgs', []);
@@ -111,8 +139,17 @@ export class SessionManager {
     const id = `claude-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const name = opts.name ?? this.suggestName(cwd);
 
-    const args = [...defaultArgs, ...(opts.extraArgs ?? [])];
+    const resumeArgs = opts.resumeSessionId
+      ? ['--resume', opts.resumeSessionId]
+      : [];
+    const args = [...defaultArgs, ...resumeArgs, ...(opts.extraArgs ?? [])];
     const commandLine = this.buildCommandLine(cliPath, args);
+
+    // For resumes, we already know the JSONL path: ~/.claude/projects/<encoded-cwd>/<id>.jsonl.
+    // Pre-set so the detector doesn't have to poll for a "new" file (the existing file is reused).
+    const knownJsonlPath = opts.resumeSessionId
+      ? this.jsonlPathFor(cwd, opts.resumeSessionId)
+      : undefined;
 
     const terminal = vscode.window.createTerminal({
       name: `Claude: ${name}`,
@@ -131,6 +168,8 @@ export class SessionManager {
       startedAt: new Date(),
       status: 'idle',
       manuallyRenamed: false,
+      usage: emptyUsage(),
+      jsonlPath: knownJsonlPath,
     };
     this.sessions.set(id, session);
     this.persist();
@@ -148,9 +187,40 @@ export class SessionManager {
     const session = this.sessions.get(id);
     if (!session) return;
     if (session.status === status) return;
+    const from = session.status;
     session.status = status;
+    this._onDidChangeStatus.fire({ id, from, to: status });
     this._onDidChange.fire();
     // status is ephemeral, not persisted
+  }
+
+  /**
+   * Add a usage delta from a single assistant message. The caller (status
+   * detector) extracts `message.usage` and `message.model` from a JSONL line
+   * and forwards them here. Cost is computed against `MODEL_PRICING` and
+   * accumulated. Unknown models contribute 0 to cost but still tally tokens.
+   */
+  addUsage(
+    id: string,
+    delta: {
+      model?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWrite5mTokens?: number;
+      cacheWrite1hTokens?: number;
+    }
+  ): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    const u = session.usage;
+    u.inputTokens += delta.inputTokens ?? 0;
+    u.outputTokens += delta.outputTokens ?? 0;
+    u.cacheReadTokens += delta.cacheReadTokens ?? 0;
+    u.cacheWrite5mTokens += delta.cacheWrite5mTokens ?? 0;
+    u.cacheWrite1hTokens += delta.cacheWrite1hTokens ?? 0;
+    u.costUsd += estimateCostUsd(delta);
+    this._onDidChange.fire();
   }
 
   rename(id: string, newName: string): void {
@@ -243,6 +313,7 @@ export class SessionManager {
     }
     this.sessions.clear();
     this._onDidChange.dispose();
+    this._onDidChangeStatus.dispose();
   }
 
   // --- persistence -------------------------------------------------------
@@ -305,4 +376,69 @@ export class SessionManager {
     );
     return quoted.join(' ');
   }
+
+  private jsonlPathFor(cwd: string, sessionId: string): string {
+    return path.join(PROJECTS_DIR, cwd.replace(/[/\\]/g, '-'), `${sessionId}.jsonl`);
+  }
+}
+
+function emptyUsage(): SessionUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWrite5mTokens: 0,
+    cacheWrite1hTokens: 0,
+    costUsd: 0,
+  };
+}
+
+interface ModelPricing {
+  inputPerMtok: number;
+  outputPerMtok: number;
+}
+
+/**
+ * Approximate USD-per-1M-tokens pricing for the Claude 4.x family. Cache
+ * read is treated as 0.1x input; 5-minute cache write as 1.25x input;
+ * 1-hour cache write as 2x input. Pricing changes — these are rough cost
+ * estimates, not invoices.
+ */
+const MODEL_PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4-7': { inputPerMtok: 15, outputPerMtok: 75 },
+  'claude-opus-4-6': { inputPerMtok: 15, outputPerMtok: 75 },
+  'claude-opus-4-5': { inputPerMtok: 15, outputPerMtok: 75 },
+  'claude-sonnet-4-6': { inputPerMtok: 3, outputPerMtok: 15 },
+  'claude-sonnet-4-5': { inputPerMtok: 3, outputPerMtok: 15 },
+  'claude-haiku-4-5': { inputPerMtok: 1, outputPerMtok: 5 },
+};
+
+function pricingFor(model: string | undefined): ModelPricing | undefined {
+  if (!model) return undefined;
+  // Match `claude-opus-4-7` from `claude-opus-4-7-20260101` etc.
+  const exact = MODEL_PRICING[model];
+  if (exact) return exact;
+  for (const key of Object.keys(MODEL_PRICING)) {
+    if (model.startsWith(key)) return MODEL_PRICING[key];
+  }
+  return undefined;
+}
+
+function estimateCostUsd(delta: {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+}): number {
+  const p = pricingFor(delta.model);
+  if (!p) return 0;
+  const M = 1_000_000;
+  const input = (delta.inputTokens ?? 0) * (p.inputPerMtok / M);
+  const output = (delta.outputTokens ?? 0) * (p.outputPerMtok / M);
+  const cacheRead = (delta.cacheReadTokens ?? 0) * (p.inputPerMtok * 0.1 / M);
+  const cw5 = (delta.cacheWrite5mTokens ?? 0) * (p.inputPerMtok * 1.25 / M);
+  const cw1h = (delta.cacheWrite1hTokens ?? 0) * (p.inputPerMtok * 2 / M);
+  return input + output + cacheRead + cw5 + cw1h;
 }

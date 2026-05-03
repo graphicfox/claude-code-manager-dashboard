@@ -73,14 +73,28 @@ export class DashboardPanel {
       cwd: s.cwd,
       status: s.status,
       startedAt: s.startedAt.toISOString(),
+      usage: s.usage,
     }));
-    this.panel.webview.html = this.render(sessions);
+    const totals = sessions.reduce(
+      (acc, s) => {
+        acc.input += s.usage.inputTokens + s.usage.cacheReadTokens + s.usage.cacheWrite5mTokens + s.usage.cacheWrite1hTokens;
+        acc.output += s.usage.outputTokens;
+        acc.cost += s.usage.costUsd;
+        return acc;
+      },
+      { input: 0, output: 0, cost: 0 }
+    );
+    this.panel.webview.html = this.render(sessions, totals);
   }
 
-  private render(sessions: any[]): string {
+  private render(
+    sessions: any[],
+    totals: { input: number; output: number; cost: number }
+  ): string {
     const nonce = getNonce();
     const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
     const data = JSON.stringify(sessions).replace(/</g, '\\u003c');
+    const totalsData = JSON.stringify(totals).replace(/</g, '\\u003c');
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -173,6 +187,18 @@ export class DashboardPanel {
     padding: 48px 16px;
     color: var(--vscode-descriptionForeground);
   }
+  .totals {
+    display: flex;
+    gap: 16px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .totals .num { font-weight: 600; color: var(--vscode-foreground); }
+  .totals .label { color: var(--vscode-descriptionForeground); margin-right: 4px; }
+  .usage { font-size: 11px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); }
 </style>
 </head>
 <body>
@@ -183,11 +209,13 @@ export class DashboardPanel {
   </div>
   <button id="new">+ New Session</button>
 </header>
+<div id="totals"></div>
 <div id="root"></div>
 
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
   const sessions = ${data};
+  const totals = ${totalsData};
 
   const root = document.getElementById('root');
   const stats = document.getElementById('stats');
@@ -206,19 +234,51 @@ export class DashboardPanel {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  function fmtTokens(n) {
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + 'K';
+    return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + 'M';
+  }
+  function fmtCost(c) {
+    return '$' + c.toFixed(c < 1 ? 3 : 2);
+  }
+  function usageLine(u) {
+    const total = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
+    if (total === 0) return '';
+    const inAll = u.inputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
+    const parts = [fmtTokens(inAll) + ' in', fmtTokens(u.outputTokens) + ' out'];
+    if (u.costUsd > 0) parts.push(fmtCost(u.costUsd));
+    return parts.join(' · ');
+  }
+
   function render() {
     stats.textContent = sessions.length + ' active session' + (sessions.length === 1 ? '' : 's');
+
+    const totalsEl = document.getElementById('totals');
+    if (totals.input + totals.output > 0) {
+      totalsEl.className = 'totals';
+      totalsEl.innerHTML =
+        '<div><span class="label">Input:</span><span class="num">' + fmtTokens(totals.input) + '</span></div>' +
+        '<div><span class="label">Output:</span><span class="num">' + fmtTokens(totals.output) + '</span></div>' +
+        (totals.cost > 0 ? '<div><span class="label">Cost:</span><span class="num">' + fmtCost(totals.cost) + '</span></div>' : '');
+    } else {
+      totalsEl.className = '';
+      totalsEl.innerHTML = '';
+    }
 
     if (sessions.length === 0) {
       root.innerHTML = '<div class="empty">No active sessions. Click <strong>+ New Session</strong> to start one.</div>';
       return;
     }
 
-    root.innerHTML = '<div class="grid">' + sessions.map(s => \`
+    root.innerHTML = '<div class="grid">' + sessions.map(s => {
+      const usage = usageLine(s.usage);
+      return \`
       <div class="card s-\${s.status}" data-id="\${s.id}">
         <h2>\${escape(s.name)} <span class="status-pill s-\${s.status}">\${s.status}</span></h2>
         <div class="meta">Started \${fmtTime(s.startedAt)}</div>
         <div class="meta cwd">\${escape(s.cwd)}</div>
+        \${usage ? '<div class="usage">' + escape(usage) + '</div>' : ''}
         <div class="prompt-row">
           <input type="text" placeholder="Send prompt..." data-prompt-for="\${s.id}">
           <button class="secondary" data-send="\${s.id}">Send</button>
@@ -228,8 +288,8 @@ export class DashboardPanel {
           <button class="secondary" data-rename="\${s.id}">Rename</button>
           <button class="secondary" data-kill="\${s.id}">Kill</button>
         </div>
-      </div>
-    \`).join('') + '</div>';
+      </div>\`;
+    }).join('') + '</div>';
 
     root.querySelectorAll('[data-focus]').forEach(b =>
       b.onclick = () => vscode.postMessage({ command: 'focus', id: b.dataset.focus }));

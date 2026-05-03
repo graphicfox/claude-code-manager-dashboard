@@ -92,6 +92,11 @@
         "command": "claudeCodeManager.setStatus",
         "title": "Claude: Set Session Status",
         "icon": "$(symbol-event)"
+      },
+      {
+        "command": "claudeCodeManager.resumeSession",
+        "title": "Claude: Resume Recent Session...",
+        "icon": "$(history)"
       }
     ],
     "menus": {
@@ -102,14 +107,19 @@
           "group": "navigation@1"
         },
         {
-          "command": "claudeCodeManager.openDashboard",
+          "command": "claudeCodeManager.resumeSession",
           "when": "view == claudeCodeSessions",
           "group": "navigation@2"
         },
         {
-          "command": "claudeCodeManager.refresh",
+          "command": "claudeCodeManager.openDashboard",
           "when": "view == claudeCodeSessions",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeCodeManager.refresh",
+          "when": "view == claudeCodeSessions",
+          "group": "navigation@4"
         },
         {
           "command": "claudeCodeManager.killAll",
@@ -167,6 +177,17 @@
           "type": "boolean",
           "default": true,
           "description": "Auto-rename sessions to the task title that Claude Code derives, replacing the random initial name. Manual renames pin the name and disable further auto-renames for that session."
+        },
+        "claudeCodeManager.notifications.mode": {
+          "type": "string",
+          "enum": ["toast", "statusBar", "none"],
+          "default": "toast",
+          "description": "How to surface sessions that need attention (Question / Permission states).",
+          "enumDescriptions": [
+            "Show a VS Code information notification with a Focus button",
+            "Briefly flash a status-bar message",
+            "Do not notify"
+          ]
         }
       }
     }

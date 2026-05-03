@@ -101,7 +101,13 @@ export class StatusDetector implements vscode.Disposable {
       pendingRead: false,
     };
     this.watches.set(session.id, watch);
-    this.beginPolling(watch);
+    if (session.jsonlPath) {
+      // Resumed session — file already exists, skip dir-polling.
+      watch.jsonlPath = session.jsonlPath;
+      await this.beginTail(watch);
+    } else {
+      this.beginPolling(watch);
+    }
   }
 
   private detach(id: string): void {
@@ -257,6 +263,18 @@ export class StatusDetector implements vscode.Disposable {
         } else {
           this.setStatus(watch, 'busy');
         }
+        if (msg.usage) {
+          const u = msg.usage;
+          const cw = u.cache_creation;
+          this.manager.addUsage(watch.session.id, {
+            model: msg.model,
+            inputTokens: u.input_tokens,
+            outputTokens: u.output_tokens,
+            cacheReadTokens: u.cache_read_input_tokens,
+            cacheWrite5mTokens: cw?.ephemeral_5m_input_tokens,
+            cacheWrite1hTokens: cw?.ephemeral_1h_input_tokens,
+          });
+        }
         break;
       }
 
@@ -311,8 +329,19 @@ interface JsonlEvent {
   aiTitle?: string;
   subtype?: string;
   message?: {
+    model?: string;
     stop_reason?: string;
     content?: Array<{ type?: string; name?: string }>;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_creation?: {
+        ephemeral_5m_input_tokens?: number;
+        ephemeral_1h_input_tokens?: number;
+      };
+    };
   };
 }
 

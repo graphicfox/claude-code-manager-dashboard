@@ -13,12 +13,14 @@ interface SessionVM {
   cwdRelative: string;
   status: SessionStatus;
   startedAt: string;
+  usageLine: string;
 }
 
 export class SessionWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'claudeCodeSessions';
 
   private view?: vscode.WebviewView;
+  private pendingBadge: vscode.ViewBadge | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -31,6 +33,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
+    if (this.pendingBadge !== undefined) view.badge = this.pendingBadge;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -88,6 +91,11 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     this.update();
   }
 
+  setBadge(badge: { value: number; tooltip: string } | undefined): void {
+    this.pendingBadge = badge;
+    if (this.view) this.view.badge = badge;
+  }
+
   private update(): void {
     if (!this.view) return;
     const sessions: SessionVM[] = this.manager.list().map((s) => this.toVM(s));
@@ -102,6 +110,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       cwdRelative: vscode.workspace.asRelativePath(s.cwd, false),
       status: s.status,
       startedAt: s.startedAt.toISOString(),
+      usageLine: formatUsageLine(s),
     };
   }
 
@@ -187,6 +196,12 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .usage {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-editor-font-family);
+    opacity: 0.75;
   }
 
   .status-pill {
@@ -316,6 +331,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
         <button class="s-\${st} \${s.status === st ? 'active' : ''}" data-set-status="\${st}" data-id="\${s.id}" title="Mark as \${LABELS[st]}">\${LABELS[st]}</button>
       \`).join('');
 
+      const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
       return \`
         <div class="session s-\${s.status}" data-id="\${s.id}">
           <div class="row">
@@ -323,6 +339,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
             <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
           </div>
           <div class="cwd">\${escape(s.cwdRelative || s.cwd)}</div>
+          \${usage}
           <div class="status-row">\${statusButtons}</div>
           <div class="actions">
             <button data-focus="\${s.id}">Focus</button>
@@ -366,4 +383,19 @@ function getNonce(): string {
   let s = '';
   for (let i = 0; i < 32; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
   return s;
+}
+
+function formatUsageLine(s: ClaudeSession): string {
+  const u = s.usage;
+  const total = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
+  if (total === 0) return '';
+  const parts = [`${formatTokens(u.inputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens)} in`, `${formatTokens(u.outputTokens)} out`];
+  if (u.costUsd > 0) parts.push(`$${u.costUsd.toFixed(u.costUsd < 1 ? 3 : 2)}`);
+  return parts.join(' · ');
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
 }
