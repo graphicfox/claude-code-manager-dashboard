@@ -1,0 +1,175 @@
+{
+  "name": "claude-code-manager",
+  "displayName": "Claude Code Manager",
+  "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from within VS Code.",
+  "version": "0.1.0",
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other", "AI"],
+  "keywords": ["claude", "anthropic", "ai", "agent", "terminal"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-code-manager",
+          "title": "Claude Code Manager",
+          "icon": "resources/claude.svg"
+        }
+      ]
+    },
+    "views": {
+      "claude-code-manager": [
+        {
+          "type": "webview",
+          "id": "claudeCodeSessions",
+          "name": "Sessions",
+          "icon": "resources/claude.svg",
+          "contextualTitle": "Claude Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeCodeManager.newSession",
+        "title": "Claude: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "claudeCodeManager.newSessionInFolder",
+        "title": "Claude: New Session in Folder...",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "claudeCodeManager.focusSession",
+        "title": "Claude: Focus Session",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "claudeCodeManager.killSession",
+        "title": "Claude: Kill Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeCodeManager.killAll",
+        "title": "Claude: Kill All Sessions",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "claudeCodeManager.renameSession",
+        "title": "Claude: Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeCodeManager.refresh",
+        "title": "Claude: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeCodeManager.openDashboard",
+        "title": "Claude: Open Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "claudeCodeManager.sendPrompt",
+        "title": "Claude: Send Prompt to Session",
+        "icon": "$(send)"
+      },
+      {
+        "command": "claudeCodeManager.restoreSessions",
+        "title": "Claude: Restore Saved Sessions",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeCodeManager.clearSavedSessions",
+        "title": "Claude: Clear Saved Sessions",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "claudeCodeManager.setStatus",
+        "title": "Claude: Set Session Status",
+        "icon": "$(symbol-event)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeCodeManager.newSession",
+          "when": "view == claudeCodeSessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeCodeManager.openDashboard",
+          "when": "view == claudeCodeSessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeCodeManager.refresh",
+          "when": "view == claudeCodeSessions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "claudeCodeManager.killAll",
+          "when": "view == claudeCodeSessions",
+          "group": "overflow@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Code Manager",
+      "properties": {
+        "claudeCodeManager.cliPath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path or command name for the Claude Code CLI."
+        },
+        "claudeCodeManager.defaultArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Default arguments passed when spawning a new session (e.g. [\"--model\", \"claude-opus-4-7\"])."
+        },
+        "claudeCodeManager.shell": {
+          "type": "string",
+          "default": "",
+          "description": "Override shell for sessions. Leave empty to use VS Code's default integrated terminal shell."
+        },
+        "claudeCodeManager.confirmKill": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before killing a session."
+        },
+        "claudeCodeManager.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a Claude session counter in the status bar."
+        },
+        "claudeCodeManager.restoreOnActivate": {
+          "type": "string",
+          "enum": ["ask", "always", "never"],
+          "default": "ask",
+          "description": "On activation, what to do with sessions saved from a previous workspace launch.",
+          "enumDescriptions": [
+            "Prompt before restoring saved sessions",
+            "Always restore saved sessions silently",
+            "Never restore saved sessions"
+          ]
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
