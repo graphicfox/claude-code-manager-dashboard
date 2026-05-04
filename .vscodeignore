@@ -1,10 +1,13 @@
 .vscode/**
 .vscode-test/**
+.design-log/**
 src/**
+node_modules/**
 .gitignore
 .eslintrc.json
 **/tsconfig.json
 **/*.map
 **/*.ts
-node_modules/**
-!node_modules/.bin/
+CLAUDE.md
+*.vsix
+.DS_Store

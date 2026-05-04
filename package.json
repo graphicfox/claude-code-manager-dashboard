@@ -3,13 +3,36 @@
   "displayName": "Claude Code Manager",
   "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from within VS Code.",
   "version": "0.1.0",
-  "publisher": "your-publisher",
+  "publisher": "kimmartini",
+  "license": "MIT",
+  "author": {
+    "name": "Kim Martini"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/graphicfox/claude-code-manager-dashboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/graphicfox/claude-code-manager-dashboard/issues"
+  },
+  "homepage": "https://github.com/graphicfox/claude-code-manager-dashboard#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other", "AI"],
-  "keywords": ["claude", "anthropic", "ai", "agent", "terminal"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "ai",
+    "agent",
+    "terminal"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -138,7 +161,9 @@
         },
         "claudeCodeManager.defaultArgs": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Default arguments passed when spawning a new session (e.g. [\"--model\", \"claude-opus-4-7\"])."
         },
@@ -159,7 +184,11 @@
         },
         "claudeCodeManager.restoreOnActivate": {
           "type": "string",
-          "enum": ["ask", "always", "never"],
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
           "default": "ask",
           "description": "On activation, what to do with sessions saved from a previous workspace launch.",
           "enumDescriptions": [
@@ -180,7 +209,11 @@
         },
         "claudeCodeManager.notifications.mode": {
           "type": "string",
-          "enum": ["toast", "statusBar", "none"],
+          "enum": [
+            "toast",
+            "statusBar",
+            "none"
+          ],
           "default": "toast",
           "description": "How to surface sessions that need attention (Question / Permission states).",
           "enumDescriptions": [
@@ -196,7 +229,11 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package"
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "publish:patch": "vsce publish patch",
+    "publish:minor": "vsce publish minor",
+    "publish:major": "vsce publish major"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
