@@ -230,16 +230,11 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package",
-    "publish": "vsce publish",
-    "release": "commit-and-tag-version",
-    "release:patch": "commit-and-tag-version --release-as patch",
-    "release:minor": "commit-and-tag-version --release-as minor",
-    "release:major": "commit-and-tag-version --release-as major"
+    "publish": "vsce publish"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "commit-and-tag-version": "^12.7.1",
     "typescript": "^5.3.3"
   }
 }
