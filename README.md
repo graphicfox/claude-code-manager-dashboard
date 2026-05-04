@@ -8,6 +8,7 @@ A VS Code extension to manage multiple **Claude Code** CLI sessions from a sideb
 - 🚀 **One-click new sessions**, optionally in any folder you pick
 - 🎯 **Focus** any terminal, **rename** sessions, **send prompts** without switching panes
 - 📊 **Dashboard webview** with a card per session for at-a-glance management
+- 🪟 **Cross-window visibility** — see (and click-to-reveal) sessions running in your other VS Code windows
 - ⚙️ **Configurable** CLI path, default args, shell, and kill confirmation
 - 🧹 **Kill all** active sessions in one command
 - 🔄 Auto-detects when a terminal is closed externally and updates state
@@ -43,6 +44,7 @@ code --install-extension claude-code-manager-0.1.0.vsix
 | `claudeCodeManager.defaultArgs` | `[]` | Args passed to every spawned session |
 | `claudeCodeManager.shell` | `""` | Override shell (empty = VS Code default) |
 | `claudeCodeManager.confirmKill` | `true` | Prompt before killing a session |
+| `claudeCodeManager.showAllWindows` | `true` | Show Claude sessions running in other VS Code windows on this machine. External cards are read-only — click to reveal the owning window. |
 
 ## Commands
 

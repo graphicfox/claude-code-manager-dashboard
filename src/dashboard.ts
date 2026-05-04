@@ -1,5 +1,25 @@
 import * as vscode from 'vscode';
-import { SessionManager } from './sessionManager';
+import { SessionManager, SessionUsage } from './sessionManager';
+import { ExternalSessionTracker } from './externalSessionTracker';
+import { CrossWindowCommandSender, revealVSCodeWindow } from './crossWindowCommands';
+
+interface SessionTotals {
+  input: number;
+  output: number;
+  cost: number;
+}
+
+function totalsFor(usages: SessionUsage[]): SessionTotals {
+  return usages.reduce<SessionTotals>(
+    (acc, u) => {
+      acc.input += u.inputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
+      acc.output += u.outputTokens;
+      acc.cost += u.costUsd;
+      return acc;
+    },
+    { input: 0, output: 0, cost: 0 }
+  );
+}
 
 export class DashboardPanel {
   public static current: DashboardPanel | undefined;
@@ -7,7 +27,12 @@ export class DashboardPanel {
 
   private disposables: vscode.Disposable[] = [];
 
-  static show(context: vscode.ExtensionContext, manager: SessionManager): void {
+  static show(
+    context: vscode.ExtensionContext,
+    manager: SessionManager,
+    tracker: ExternalSessionTracker,
+    sender: CrossWindowCommandSender
+  ): void {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
     if (DashboardPanel.current) {
@@ -27,13 +52,14 @@ export class DashboardPanel {
       }
     );
 
-    DashboardPanel.current = new DashboardPanel(panel, context, manager);
+    DashboardPanel.current = new DashboardPanel(panel, manager, tracker, sender);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
-    private readonly context: vscode.ExtensionContext,
-    private readonly manager: SessionManager
+    private readonly manager: SessionManager,
+    private readonly tracker: ExternalSessionTracker,
+    private readonly sender: CrossWindowCommandSender
   ) {
     this.update();
 
@@ -46,16 +72,25 @@ export class DashboardPanel {
             await vscode.commands.executeCommand('claudeCodeManager.newSession');
             break;
           case 'focus':
-            this.manager.focus(msg.id);
+            if (this.manager.get(msg.id)) this.manager.focus(msg.id);
             break;
           case 'kill':
-            await this.manager.kill(msg.id, { confirm: true });
+            if (this.manager.get(msg.id)) await this.manager.kill(msg.id, { confirm: true });
             break;
           case 'rename':
-            this.manager.rename(msg.id, msg.name);
+            if (this.manager.get(msg.id)) this.manager.rename(msg.id, msg.name);
             break;
           case 'sendPrompt':
-            this.manager.sendPrompt(msg.id, msg.prompt);
+            if (this.manager.get(msg.id)) this.manager.sendPrompt(msg.id, msg.prompt);
+            break;
+          case 'revealExternal':
+            if (typeof msg.windowId === 'string' && typeof msg.id === 'string') {
+              revealVSCodeWindow(
+                typeof msg.workspaceFolder === 'string' ? msg.workspaceFolder : undefined,
+                typeof msg.workspaceName === 'string' ? msg.workspaceName : undefined
+              );
+              await this.sender.requestFocus(msg.windowId, msg.id);
+            }
             break;
         }
       },
@@ -63,7 +98,15 @@ export class DashboardPanel {
       this.disposables
     );
 
-    this.disposables.push(this.manager.onDidChange(() => this.update()));
+    this.disposables.push(
+      this.manager.onDidChange(() => this.update()),
+      this.tracker.onDidChange(() => this.update()),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('claudeCodeManager.showAllWindows')) {
+          this.update();
+        }
+      })
+    );
   }
 
   private update(): void {
@@ -74,27 +117,39 @@ export class DashboardPanel {
       status: s.status,
       startedAt: s.startedAt.toISOString(),
       usage: s.usage,
+      external: false as const,
     }));
-    const totals = sessions.reduce(
-      (acc, s) => {
-        acc.input += s.usage.inputTokens + s.usage.cacheReadTokens + s.usage.cacheWrite5mTokens + s.usage.cacheWrite1hTokens;
-        acc.output += s.usage.outputTokens;
-        acc.cost += s.usage.costUsd;
-        return acc;
-      },
-      { input: 0, output: 0, cost: 0 }
-    );
-    this.panel.webview.html = this.render(sessions, totals);
+    const showExternal = vscode.workspace
+      .getConfiguration('claudeCodeManager')
+      .get<boolean>('showAllWindows', true);
+    const externalsRaw = showExternal ? this.tracker.list() : [];
+    const externals = externalsRaw.map((s) => ({
+      id: s.id,
+      name: s.name,
+      cwd: s.cwd,
+      status: s.status,
+      startedAt: s.startedAt.toISOString(),
+      usage: s.usage,
+      windowId: s.windowId,
+      workspaceFolder: s.workspaceFolder,
+      workspaceName: s.workspaceName,
+      external: true as const,
+    }));
+    const localTotals = totalsFor(sessions.map((s) => s.usage));
+    const externalTotals = totalsFor(externals.map((s) => s.usage));
+    this.panel.webview.html = this.render(sessions, externals, localTotals, externalTotals);
   }
 
   private render(
     sessions: any[],
-    totals: { input: number; output: number; cost: number }
+    externals: any[],
+    localTotals: SessionTotals,
+    externalTotals: SessionTotals
   ): string {
     const nonce = getNonce();
     const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-    const data = JSON.stringify(sessions).replace(/</g, '\\u003c');
-    const totalsData = JSON.stringify(totals).replace(/</g, '\\u003c');
+    const data = JSON.stringify({ sessions, externals }).replace(/</g, '\\u003c');
+    const totalsData = JSON.stringify({ local: localTotals, external: externalTotals }).replace(/</g, '\\u003c');
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -169,6 +224,30 @@ export class DashboardPanel {
   .card.s-question { border-color: rgba(255, 184, 0, 0.50); }
   .card.s-permission { border-color: rgba(255, 122, 0, 0.55); }
   .card.s-done { border-color: rgba(63, 185, 80, 0.45); }
+  .card.external {
+    border-style: dashed;
+    opacity: 0.92;
+    cursor: pointer;
+  }
+  .card.external:hover { opacity: 1; }
+  .external-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background, rgba(140,140,140,0.25));
+    color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+    font-weight: 600;
+  }
+  .section-header {
+    margin: 18px 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--vscode-descriptionForeground);
+  }
   .meta { font-size: 11px; color: var(--vscode-descriptionForeground); }
   .cwd { font-family: var(--vscode-editor-font-family); word-break: break-all; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -188,13 +267,29 @@ export class DashboardPanel {
     color: var(--vscode-descriptionForeground);
   }
   .totals {
-    display: flex;
-    gap: 16px;
     padding: 8px 12px;
     margin-bottom: 12px;
     border: 1px solid var(--vscode-panel-border);
     border-radius: 4px;
     font-size: 12px;
+  }
+  .totals-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .totals-row + .totals-row {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--vscode-panel-border);
+  }
+  .totals .scope {
+    color: var(--vscode-descriptionForeground);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    min-width: 110px;
   }
   .totals .num { font-weight: 600; color: var(--vscode-foreground); }
   .totals .label { color: var(--vscode-descriptionForeground); margin-right: 4px; }
@@ -214,7 +309,7 @@ export class DashboardPanel {
 
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
-  const sessions = ${data};
+  const data = ${data};
   const totals = ${totalsData};
 
   const root = document.getElementById('root');
@@ -251,29 +346,18 @@ export class DashboardPanel {
     return parts.join(' · ');
   }
 
-  function render() {
-    stats.textContent = sessions.length + ' active session' + (sessions.length === 1 ? '' : 's');
+  function totalsRow(label, t) {
+    return '<div class="totals-row">' +
+      '<span class="scope">' + label + '</span>' +
+      '<div><span class="label">Input:</span><span class="num">' + fmtTokens(t.input) + '</span></div>' +
+      '<div><span class="label">Output:</span><span class="num">' + fmtTokens(t.output) + '</span></div>' +
+      (t.cost > 0 ? '<div><span class="label">Cost:</span><span class="num">' + fmtCost(t.cost) + '</span></div>' : '') +
+      '</div>';
+  }
 
-    const totalsEl = document.getElementById('totals');
-    if (totals.input + totals.output > 0) {
-      totalsEl.className = 'totals';
-      totalsEl.innerHTML =
-        '<div><span class="label">Input:</span><span class="num">' + fmtTokens(totals.input) + '</span></div>' +
-        '<div><span class="label">Output:</span><span class="num">' + fmtTokens(totals.output) + '</span></div>' +
-        (totals.cost > 0 ? '<div><span class="label">Cost:</span><span class="num">' + fmtCost(totals.cost) + '</span></div>' : '');
-    } else {
-      totalsEl.className = '';
-      totalsEl.innerHTML = '';
-    }
-
-    if (sessions.length === 0) {
-      root.innerHTML = '<div class="empty">No active sessions. Click <strong>+ New Session</strong> to start one.</div>';
-      return;
-    }
-
-    root.innerHTML = '<div class="grid">' + sessions.map(s => {
-      const usage = usageLine(s.usage);
-      return \`
+  function localCardHtml(s) {
+    const usage = usageLine(s.usage);
+    return \`
       <div class="card s-\${s.status}" data-id="\${s.id}">
         <h2>\${escape(s.name)} <span class="status-pill s-\${s.status}">\${s.status}</span></h2>
         <div class="meta">Started \${fmtTime(s.startedAt)}</div>
@@ -289,7 +373,60 @@ export class DashboardPanel {
           <button class="secondary" data-kill="\${s.id}">Kill</button>
         </div>
       </div>\`;
-    }).join('') + '</div>';
+  }
+
+  function externalCardHtml(s) {
+    const usage = usageLine(s.usage);
+    return \`
+      <div class="card external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
+        <h2>
+          \${escape(s.name)}
+          <span class="status-pill s-\${s.status}">\${s.status}</span>
+          <span class="external-tag">Other window</span>
+        </h2>
+        <div class="meta">Started \${fmtTime(s.startedAt)}</div>
+        <div class="meta cwd">\${escape(s.cwd)}</div>
+        \${usage ? '<div class="usage">' + escape(usage) + '</div>' : ''}
+      </div>\`;
+  }
+
+  function render() {
+    const total = data.sessions.length + data.externals.length;
+    stats.textContent = total + ' active session' + (total === 1 ? '' : 's') +
+      (data.externals.length > 0 ? ' (' + data.sessions.length + ' here, ' + data.externals.length + ' other)' : '');
+
+    const totalsEl = document.getElementById('totals');
+    const localHas = totals.local.input + totals.local.output > 0;
+    const externalHas = totals.external.input + totals.external.output > 0;
+    if (localHas || externalHas) {
+      totalsEl.className = 'totals';
+      let inner = '';
+      if (data.externals.length > 0) {
+        inner += totalsRow('This window', totals.local);
+        inner += totalsRow('Other windows', totals.external);
+      } else {
+        inner += totalsRow('Total', totals.local);
+      }
+      totalsEl.innerHTML = inner;
+    } else {
+      totalsEl.className = '';
+      totalsEl.innerHTML = '';
+    }
+
+    if (total === 0) {
+      root.innerHTML = '<div class="empty">No active sessions. Click <strong>+ New Session</strong> to start one.</div>';
+      return;
+    }
+
+    let html = '';
+    if (data.sessions.length > 0) {
+      html += '<div class="grid">' + data.sessions.map(localCardHtml).join('') + '</div>';
+    }
+    if (data.externals.length > 0) {
+      html += '<div class="section-header">Other windows</div>';
+      html += '<div class="grid">' + data.externals.map(externalCardHtml).join('') + '</div>';
+    }
+    root.innerHTML = html;
 
     root.querySelectorAll('[data-focus]').forEach(b =>
       b.onclick = () => vscode.postMessage({ command: 'focus', id: b.dataset.focus }));
@@ -308,6 +445,17 @@ export class DashboardPanel {
           input.value = '';
         }
       });
+    root.querySelectorAll('[data-reveal-id]').forEach(el => {
+      el.onclick = () => {
+        vscode.postMessage({
+          command: 'revealExternal',
+          id: el.dataset.revealId,
+          windowId: el.dataset.windowId,
+          workspaceFolder: el.dataset.workspaceFolder,
+          workspaceName: el.dataset.workspaceName,
+        });
+      };
+    });
   }
 
   render();

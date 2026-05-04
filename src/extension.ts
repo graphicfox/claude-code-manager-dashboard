@@ -5,13 +5,34 @@ import { DashboardPanel } from './dashboard';
 import { StatusDetector } from './statusDetector';
 import { Notifier } from './notifier';
 import { listRecentSessions, pickRecentLabel } from './recentSessions';
+import { ManifestPublisher } from './manifestPublisher';
+import { ExternalSessionTracker } from './externalSessionTracker';
+import {
+  CrossWindowCommandSender,
+  CrossWindowCommandReceiver,
+  revealVSCodeWindow,
+} from './crossWindowCommands';
 
 export function activate(context: vscode.ExtensionContext): void {
   const manager = new SessionManager(context);
-  const webviewProvider = new SessionWebviewProvider(context, manager);
+  const publisher = new ManifestPublisher(manager);
+  const tracker = new ExternalSessionTracker(publisher.windowId());
+  const sender = new CrossWindowCommandSender();
+  const receiver = new CrossWindowCommandReceiver(
+    publisher.windowId(),
+    (sessionId) => {
+      const session = manager.get(sessionId);
+      if (!session) return;
+      // The clicker handles OS-level window activation by running `code
+      // <folder>` itself. Here we just surface the right terminal so it's
+      // already foregrounded within this window when it comes up.
+      session.terminal.show(false);
+    }
+  );
+  const webviewProvider = new SessionWebviewProvider(context, manager, tracker, sender);
   const detector = new StatusDetector(manager);
-  const notifier = new Notifier(manager, webviewProvider);
-  context.subscriptions.push(detector, notifier);
+  const notifier = new Notifier(manager, webviewProvider, tracker);
+  context.subscriptions.push(detector, notifier, publisher, tracker, receiver);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -37,26 +58,44 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const sessions = manager.list();
-    statusBar.text = `$(sparkle) Claude: ${sessions.length}`;
-    if (sessions.length === 0) {
+    const externals = tracker.list();
+    const total = sessions.length + externals.length;
+    statusBar.text = `$(sparkle) Claude: ${total}`;
+    if (total === 0) {
       statusBar.tooltip = 'No active Claude sessions — click to open dashboard';
     } else {
       const md = new vscode.MarkdownString();
-      md.appendMarkdown(`**Claude Code Sessions (${sessions.length})**\n\n`);
-      for (const s of sessions) {
-        const rel = vscode.workspace.asRelativePath(s.cwd, false);
-        md.appendMarkdown(`- ${s.name} — \`${rel}\`\n`);
+      md.appendMarkdown(`**Claude Code Sessions (${total})**\n\n`);
+      if (sessions.length > 0) {
+        md.appendMarkdown(`_This window (${sessions.length})_\n\n`);
+        for (const s of sessions) {
+          const rel = vscode.workspace.asRelativePath(s.cwd, false);
+          md.appendMarkdown(`- ${s.name} — \`${rel}\`\n`);
+        }
+        md.appendMarkdown('\n');
       }
-      md.appendMarkdown(`\n_Click to open dashboard_`);
+      if (externals.length > 0) {
+        md.appendMarkdown(`_Other windows (${externals.length})_\n\n`);
+        for (const s of externals) {
+          const cwdLabel = lastSegment(s.cwd) || s.cwd;
+          md.appendMarkdown(`- ${s.name} — \`${cwdLabel}\`\n`);
+        }
+        md.appendMarkdown('\n');
+      }
+      md.appendMarkdown(`_Click to open dashboard_`);
       statusBar.tooltip = md;
     }
     statusBar.show();
   }
 
   context.subscriptions.push(manager.onDidChange(updateStatusBar));
+  context.subscriptions.push(tracker.onDidChange(updateStatusBar));
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('claudeCodeManager.statusBar.enabled')) {
+      if (
+        e.affectsConfiguration('claudeCodeManager.statusBar.enabled') ||
+        e.affectsConfiguration('claudeCodeManager.showAllWindows')
+      ) {
         updateStatusBar();
       }
     })
@@ -177,7 +216,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
 
     vscode.commands.registerCommand('claudeCodeManager.openDashboard', () => {
-      DashboardPanel.show(context, manager);
+      DashboardPanel.show(context, manager, tracker, sender);
     }),
 
     vscode.commands.registerCommand('claudeCodeManager.resumeSession', async () => {
@@ -271,4 +310,10 @@ async function maybeRestore(manager: SessionManager): Promise<void> {
 
 export function deactivate(): void {
   // Subscriptions handle teardown.
+}
+
+function lastSegment(p: string): string {
+  const trimmed = p.replace(/[/\\]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }

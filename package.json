@@ -221,6 +221,11 @@
             "Briefly flash a status-bar message",
             "Do not notify"
           ]
+        },
+        "claudeCodeManager.showAllWindows": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Claude sessions running in other VS Code windows on this machine. External sessions are read-only — click a card to bring the owning window forward."
         }
       }
     }

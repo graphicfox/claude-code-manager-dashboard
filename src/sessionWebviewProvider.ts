@@ -4,7 +4,10 @@ import {
   ClaudeSession,
   SessionStatus,
   STATUS_ORDER,
+  SessionUsage,
 } from './sessionManager';
+import { ExternalSessionTracker, ExternalSession } from './externalSessionTracker';
+import { CrossWindowCommandSender, revealVSCodeWindow } from './crossWindowCommands';
 
 interface SessionVM {
   id: string;
@@ -14,6 +17,10 @@ interface SessionVM {
   status: SessionStatus;
   startedAt: string;
   usageLine: string;
+  external: boolean;
+  windowId?: string;
+  workspaceFolder?: string;
+  workspaceName?: string;
 }
 
 export class SessionWebviewProvider implements vscode.WebviewViewProvider {
@@ -24,10 +31,18 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly manager: SessionManager
+    private readonly manager: SessionManager,
+    private readonly tracker: ExternalSessionTracker,
+    private readonly sender: CrossWindowCommandSender
   ) {
     this.context.subscriptions.push(
-      this.manager.onDidChange(() => this.update())
+      this.manager.onDidChange(() => this.update()),
+      this.tracker.onDidChange(() => this.update()),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('claudeCodeManager.showAllWindows')) {
+          this.update();
+        }
+      })
     );
   }
 
@@ -47,9 +62,10 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
           await vscode.commands.executeCommand('claudeCodeManager.newSession');
           break;
         case 'focus':
-          this.manager.focus(msg.id);
+          if (this.manager.get(msg.id)) this.manager.focus(msg.id);
           break;
         case 'kill': {
+          if (!this.manager.get(msg.id)) break;
           const confirm = vscode.workspace
             .getConfiguration('claudeCodeManager')
             .get<boolean>('confirmKill', true);
@@ -67,7 +83,9 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'setStatus':
-          this.manager.setStatus(msg.id, msg.status as SessionStatus);
+          if (this.manager.get(msg.id)) {
+            this.manager.setStatus(msg.id, msg.status as SessionStatus);
+          }
           break;
         case 'sendPrompt': {
           if (!this.manager.get(msg.id)) break;
@@ -78,6 +96,17 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
           if (prompt) this.manager.sendPrompt(msg.id, prompt);
           break;
         }
+        case 'revealExternal':
+          if (typeof msg.windowId === 'string' && typeof msg.id === 'string') {
+            // Bring the target window to the front via the OS first, then
+            // tell that window to surface the right terminal.
+            revealVSCodeWindow(
+              typeof msg.workspaceFolder === 'string' ? msg.workspaceFolder : undefined,
+              typeof msg.workspaceName === 'string' ? msg.workspaceName : undefined
+            );
+            await this.sender.requestFocus(msg.windowId, msg.id);
+          }
+          break;
         case 'openDashboard':
           await vscode.commands.executeCommand('claudeCodeManager.openDashboard');
           break;
@@ -98,8 +127,14 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
   private update(): void {
     if (!this.view) return;
-    const sessions: SessionVM[] = this.manager.list().map((s) => this.toVM(s));
-    this.view.webview.html = this.render(sessions);
+    const local: SessionVM[] = this.manager.list().map((s) => this.toVM(s));
+    const showExternal = vscode.workspace
+      .getConfiguration('claudeCodeManager')
+      .get<boolean>('showAllWindows', true);
+    const external: SessionVM[] = showExternal
+      ? this.tracker.list().map((s) => this.toExternalVM(s))
+      : [];
+    this.view.webview.html = this.render(local, external);
   }
 
   private toVM(s: ClaudeSession): SessionVM {
@@ -110,14 +145,31 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       cwdRelative: vscode.workspace.asRelativePath(s.cwd, false),
       status: s.status,
       startedAt: s.startedAt.toISOString(),
-      usageLine: formatUsageLine(s),
+      usageLine: formatUsageLineFromUsage(s.usage),
+      external: false,
     };
   }
 
-  private render(sessions: SessionVM[]): string {
+  private toExternalVM(s: ExternalSession): SessionVM {
+    return {
+      id: s.id,
+      name: s.name,
+      cwd: s.cwd,
+      cwdRelative: lastSegment(s.cwd) || s.cwd,
+      status: s.status,
+      startedAt: s.startedAt.toISOString(),
+      usageLine: formatUsageLineFromUsage(s.usage),
+      external: true,
+      windowId: s.windowId,
+      workspaceFolder: s.workspaceFolder,
+      workspaceName: s.workspaceName,
+    };
+  }
+
+  private render(local: SessionVM[], external: SessionVM[]): string {
     const nonce = getNonce();
     const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-    const data = JSON.stringify(sessions).replace(/</g, '\\u003c');
+    const data = JSON.stringify({ local, external }).replace(/</g, '\\u003c');
     const statusOrder = JSON.stringify(STATUS_ORDER);
 
     return /* html */ `<!DOCTYPE html>
@@ -175,6 +227,26 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
   .session.s-done { background: rgba(63, 185, 80, 0.10); border-color: rgba(63, 185, 80, 0.45); }
   .session.s-idle { background: transparent; }
   .session.s-exited { opacity: 0.6; }
+  .session.external { border-style: dashed; opacity: 0.9; }
+  .session.external:hover { opacity: 1; }
+  .external-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background, rgba(140,140,140,0.25));
+    color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+    font-weight: 600;
+  }
+  .section-header {
+    margin: 14px 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--vscode-descriptionForeground);
+  }
 
   .row {
     display: flex;
@@ -298,7 +370,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
-  const sessions = ${data};
+  const data = ${data};
   const STATUSES = ${statusOrder};
   const root = document.getElementById('root');
 
@@ -319,37 +391,64 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  function localCard(s) {
+    const statusButtons = STATUSES.map(st => \`
+      <button class="s-\${st} \${s.status === st ? 'active' : ''}" data-set-status="\${st}" data-id="\${s.id}" title="Mark as \${LABELS[st]}">\${LABELS[st]}</button>
+    \`).join('');
+    const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
+    return \`
+      <div class="session s-\${s.status}" data-id="\${s.id}">
+        <div class="row">
+          <span class="name" data-focus="\${s.id}">\${escape(s.name)}</span>
+          <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
+        </div>
+        <div class="cwd">\${escape(s.cwdRelative || s.cwd)}</div>
+        \${usage}
+        <div class="status-row">\${statusButtons}</div>
+        <div class="actions">
+          <button data-focus="\${s.id}">Focus</button>
+          <button data-prompt="\${s.id}">Send…</button>
+          <button data-rename="\${s.id}">Rename</button>
+          <button class="danger" data-kill="\${s.id}">Kill</button>
+        </div>
+      </div>
+    \`;
+  }
+
+  function externalCard(s) {
+    const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
+    return \`
+      <div class="session external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
+        <div class="row">
+          <span class="name">\${escape(s.name)}</span>
+          <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
+        </div>
+        <div class="row" style="gap:6px;">
+          <span class="external-tag">Other window</span>
+          <span class="cwd" style="flex:1;">\${escape(s.cwdRelative || s.cwd)}</span>
+        </div>
+        \${usage}
+      </div>
+    \`;
+  }
+
   function render() {
-    if (sessions.length === 0) {
+    const total = data.local.length + data.external.length;
+    if (total === 0) {
       root.innerHTML = '<div class="empty">No active Claude sessions.<br><button id="empty-new">+ New Session</button></div>';
       document.getElementById('empty-new').onclick = () => vscode.postMessage({ command: 'newSession' });
       return;
     }
 
-    root.innerHTML = sessions.map(s => {
-      const statusButtons = STATUSES.map(st => \`
-        <button class="s-\${st} \${s.status === st ? 'active' : ''}" data-set-status="\${st}" data-id="\${s.id}" title="Mark as \${LABELS[st]}">\${LABELS[st]}</button>
-      \`).join('');
-
-      const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
-      return \`
-        <div class="session s-\${s.status}" data-id="\${s.id}">
-          <div class="row">
-            <span class="name" data-focus="\${s.id}">\${escape(s.name)}</span>
-            <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
-          </div>
-          <div class="cwd">\${escape(s.cwdRelative || s.cwd)}</div>
-          \${usage}
-          <div class="status-row">\${statusButtons}</div>
-          <div class="actions">
-            <button data-focus="\${s.id}">Focus</button>
-            <button data-prompt="\${s.id}">Send…</button>
-            <button data-rename="\${s.id}">Rename</button>
-            <button class="danger" data-kill="\${s.id}">Kill</button>
-          </div>
-        </div>
-      \`;
-    }).join('');
+    let html = '';
+    if (data.local.length > 0) {
+      html += data.local.map(localCard).join('');
+    }
+    if (data.external.length > 0) {
+      html += '<div class="section-header">Other windows</div>';
+      html += data.external.map(externalCard).join('');
+    }
+    root.innerHTML = html;
 
     root.querySelectorAll('[data-focus]').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ command: 'focus', id: el.dataset.focus }); };
@@ -369,6 +468,17 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ command: 'setStatus', id: b.dataset.id, status: b.dataset.setStatus });
       };
     });
+    root.querySelectorAll('[data-reveal-id]').forEach(el => {
+      el.onclick = () => {
+        vscode.postMessage({
+          command: 'revealExternal',
+          id: el.dataset.revealId,
+          windowId: el.dataset.windowId,
+          workspaceFolder: el.dataset.workspaceFolder,
+          workspaceName: el.dataset.workspaceName,
+        });
+      };
+    });
   }
 
   render();
@@ -385,8 +495,7 @@ function getNonce(): string {
   return s;
 }
 
-function formatUsageLine(s: ClaudeSession): string {
-  const u = s.usage;
+function formatUsageLineFromUsage(u: SessionUsage): string {
   const total = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
   if (total === 0) return '';
   const parts = [`${formatTokens(u.inputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens)} in`, `${formatTokens(u.outputTokens)} out`];
@@ -398,4 +507,10 @@ function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
   return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+}
+
+function lastSegment(p: string): string {
+  const trimmed = p.replace(/[/\\]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }

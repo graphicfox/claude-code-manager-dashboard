@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionManager, SessionStatus } from './sessionManager';
 import { SessionWebviewProvider } from './sessionWebviewProvider';
+import { ExternalSessionTracker } from './externalSessionTracker';
 
 type NotifyMode = 'toast' | 'statusBar' | 'none';
 
@@ -24,7 +25,8 @@ export class Notifier implements vscode.Disposable {
 
   constructor(
     private manager: SessionManager,
-    private webview: SessionWebviewProvider
+    private webview: SessionWebviewProvider,
+    private tracker: ExternalSessionTracker
   ) {
     this.subscriptions.push(
       manager.onDidChangeStatus((change) => {
@@ -37,7 +39,8 @@ export class Notifier implements vscode.Disposable {
         }
         this.updateBadge();
       }),
-      manager.onDidChange(() => this.updateBadge())
+      manager.onDidChange(() => this.updateBadge()),
+      tracker.onDidChange(() => this.updateBadge())
     );
     this.updateBadge();
   }
@@ -77,21 +80,25 @@ export class Notifier implements vscode.Disposable {
   }
 
   private updateBadge(): void {
-    const count = this.manager
+    const local = this.manager
       .list()
       .filter((s) => ATTENTION_STATES.includes(s.status)).length;
+    const external = this.tracker
+      .list()
+      .filter((s) => ATTENTION_STATES.includes(s.status)).length;
+    const count = local + external;
     if (count === this.lastBadgeCount) return;
     this.lastBadgeCount = count;
     if (count === 0) {
       this.webview.setBadge(undefined);
     } else {
-      this.webview.setBadge({
-        value: count,
-        tooltip:
-          count === 1
+      const tooltip =
+        external === 0
+          ? count === 1
             ? '1 Claude session needs attention'
-            : `${count} Claude sessions need attention`,
-      });
+            : `${count} Claude sessions need attention`
+          : `${count} Claude session${count === 1 ? '' : 's'} need attention (${local} here, ${external} other window${external === 1 ? '' : 's'})`;
+      this.webview.setBadge({ value: count, tooltip });
     }
   }
 }
