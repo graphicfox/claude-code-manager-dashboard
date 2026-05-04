@@ -2,7 +2,7 @@
   "name": "claude-code-manager",
   "displayName": "Claude Code Manager",
   "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from within VS Code.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "kimmartini",
   "license": "MIT",
   "author": {
