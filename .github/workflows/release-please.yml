@@ -16,12 +16,37 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: googleapis/release-please-action@v4
         id: release
         with:
           target-branch: master
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - name: Auto-merge non-major release PR
+        if: ${{ steps.release.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+          NEW_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          pr_number=$(echo "$PR_JSON" | jq -r '.number')
+          new_major="${NEW_VERSION%%.*}"
+          current_major=$(jq -r '.version' package.json | cut -d. -f1)
+
+          if [ "$new_major" -gt "$current_major" ] && [ "$current_major" -ge 1 ]; then
+            echo "Major bump $current_major.x -> $NEW_VERSION; leaving PR #$pr_number open for manual review."
+            exit 0
+          fi
+
+          echo "Auto-merging release PR #$pr_number ($NEW_VERSION)."
+          gh pr merge "$pr_number" \
+            --repo "${{ github.repository }}" \
+            --squash \
+            --delete-branch
 
   publish:
     needs: release-please
