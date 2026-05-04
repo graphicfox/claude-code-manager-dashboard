@@ -5,6 +5,13 @@ All notable changes to **Claude Code Manager** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.1.1...v0.2.0) (2026-05-04)
+
+
+### Features
+
+* cross-window session visibility ([8a02812](https://github.com/graphicfox/claude-code-manager-dashboard/commit/8a02812503e8e78ce3baf941ed8e8ce9bebebd3f))
+
 ## [0.1.1](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.1.0...v0.1.1) (2026-05-04)
 
 
