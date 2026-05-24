@@ -7,10 +7,12 @@ import { SessionManager, ClaudeSession, SessionStatus } from './sessionManager';
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
-// How long to wait while in `busy` (assistant tool_use, no follow-up) before
-// escalating to `permission`. Long-running tools (Bash, etc.) may briefly look
-// like permission waits — the user can flip back manually.
-const PERMISSION_THRESHOLD_MS = 10_000;
+// Default for how long a session can sit in `busy` with a pending tool_use
+// before being escalated to `permission`. Tunable via
+// `claudeCodeManager.autoStatus.permissionThresholdMs`. Long-running tools
+// (Bash, etc.) may briefly look like permission waits — the user can flip
+// back manually.
+const DEFAULT_PERMISSION_THRESHOLD_MS = 4_000;
 
 // `done` is set briefly when an assistant turn ends. If the matching
 // `system.stop_hook_summary` doesn't arrive (no hooks configured), fade to
@@ -79,6 +81,10 @@ export class StatusDetector implements vscode.Disposable {
       for (const id of Array.from(this.watches.keys())) this.detach(id);
       return;
     }
+    // Both CLI and extension sessions go through the same JSONL detector.
+    // For extension shadows the dir-poll claims the first new file in the
+    // cwd (same heuristic as CLI) and the resulting JSONL session id is
+    // recorded so the session can be resumed via ?session=<id> on reload.
     const live = new Set(this.manager.list().map((s) => s.id));
     for (const id of Array.from(this.watches.keys())) {
       if (!live.has(id)) this.detach(id);
@@ -147,6 +153,12 @@ export class StatusDetector implements vscode.Disposable {
       }
       watch.jsonlPath = path.join(watch.cwdDir, claimedFile);
       this.manager.setJsonlPath(watch.session.id, watch.jsonlPath);
+      // For extension shadows, the basename (minus `.jsonl`) is the session
+      // id we'd pass to `?session=<id>` to resume this conversation later.
+      if (watch.session.kind === 'extension') {
+        const sessionId = claimedFile.replace(/\.jsonl$/, '');
+        this.manager.setExtensionSessionId(watch.session.id, sessionId);
+      }
       if (watch.dirPollTimer) {
         clearInterval(watch.dirPollTimer);
         watch.dirPollTimer = undefined;
@@ -203,6 +215,8 @@ export class StatusDetector implements vscode.Disposable {
           watch.buffer = '';
         }
         if (stat.size <= watch.byteOffset) continue;
+        // File grew → session is alive.
+        this.manager.bumpActivity(watch.session.id);
         const len = stat.size - watch.byteOffset;
         const fd = await fsp.open(watch.jsonlPath, 'r');
         try {
@@ -314,13 +328,16 @@ export class StatusDetector implements vscode.Disposable {
 
   private queuePermissionEscalation(watch: SessionWatch): void {
     if (watch.permissionTimer) clearTimeout(watch.permissionTimer);
+    const threshold = vscode.workspace
+      .getConfiguration('claudeCodeManager')
+      .get<number>('autoStatus.permissionThresholdMs', DEFAULT_PERMISSION_THRESHOLD_MS);
     watch.permissionTimer = setTimeout(() => {
       watch.permissionTimer = undefined;
       const s = this.manager.get(watch.session.id);
       if (s?.status === 'busy') {
         this.manager.setStatus(watch.session.id, 'permission');
       }
-    }, PERMISSION_THRESHOLD_MS);
+    }, threshold);
   }
 }
 

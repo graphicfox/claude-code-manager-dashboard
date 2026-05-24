@@ -21,10 +21,30 @@ export const STATUS_ORDER: SessionStatus[] = [
   'done',
 ];
 
+/**
+ * What kind of session this manager record represents.
+ *
+ * - `cli` — spawned by us as a `claude` CLI process inside a `vscode.Terminal`
+ *   that we own. Full control: focus, kill, sendPrompt, JSONL auto-status.
+ * - `extension` — a "shadow" entry pointing at a tab in the official
+ *   `anthropic.claude-code` extension. We open it via the URI handler and
+ *   walk away; the official extension owns the lifecycle. Limited actions:
+ *   rename, set status, remove from list. See design log #05.
+ */
+export type SessionKind = 'cli' | 'extension';
+
 export interface PersistedSession {
   name: string;
   cwd: string;
   manuallyRenamed?: boolean;
+  /** Defaults to 'cli' for legacy records that pre-date the field. */
+  kind?: SessionKind;
+  /**
+   * For `kind: 'extension'`, the JSONL session id captured by the detector
+   * after the official extension started writing logs for this tab. On
+   * restore, used as `?session=<id>` to resume the actual conversation.
+   */
+  extensionSessionId?: string;
 }
 
 export interface SessionUsage {
@@ -41,7 +61,9 @@ export interface ClaudeSession {
   id: string;
   name: string;
   cwd: string;
-  terminal: vscode.Terminal;
+  kind: SessionKind;
+  /** Only present when `kind === 'cli'`. Extension shadows have no terminal. */
+  terminal: vscode.Terminal | undefined;
   startedAt: Date;
   status: SessionStatus;
   /**
@@ -50,11 +72,24 @@ export interface ClaudeSession {
    */
   jsonlPath?: string;
   /**
+   * For `kind: 'extension'`, the JSONL session id captured by the detector
+   * once the official extension started writing logs for this tab. Undefined
+   * until claimed. Used to resume via `?session=<id>` on reload and to focus
+   * an existing tab via the same URI.
+   */
+  extensionSessionId?: string;
+  /**
    * True once the user has manually renamed via `rename()`. Pins the name —
    * subsequent `ai-title` events from the JSONL detector will be ignored.
    */
   manuallyRenamed: boolean;
   usage: SessionUsage;
+  /**
+   * Last time this session showed any sign of life — JSONL grew, terminal
+   * was active, etc. Initialized to `startedAt`. Used by the lifecycle
+   * monitor to flip stale sessions to `exited`.
+   */
+  lastActivityAt: Date;
 }
 
 export interface SessionStatusChange {
@@ -101,7 +136,7 @@ export class SessionManager {
       vscode.window.onDidCloseTerminal((terminal) => {
         if (this.disposing) return;
         for (const [id, session] of this.sessions) {
-          if (session.terminal === terminal) {
+          if (session.kind === 'cli' && session.terminal === terminal) {
             session.status = 'exited';
             this.sessions.delete(id);
             this.persist();
@@ -129,7 +164,24 @@ export class SessionManager {
     extraArgs?: string[];
     /** If set, spawns with `--resume <id>` to continue a prior conversation. */
     resumeSessionId?: string;
+    /** Override the default kind from `claudeCodeManager.sessionType`. */
+    kind?: SessionKind;
   } = {}): ClaudeSession {
+    const config = vscode.workspace.getConfiguration('claudeCodeManager');
+    const configured = config.get<string>('sessionType', 'terminal');
+    const kind: SessionKind = opts.kind
+      ?? (configured === 'extension' ? 'extension' : 'cli');
+
+    if (kind === 'extension') return this.createExtensionShadow(opts);
+    return this.createCli(opts);
+  }
+
+  private createCli(opts: {
+    name?: string;
+    cwd?: string;
+    extraArgs?: string[];
+    resumeSessionId?: string;
+  }): ClaudeSession {
     const config = vscode.workspace.getConfiguration('claudeCodeManager');
     const cliPath = config.get<string>('cliPath', 'claude');
     const defaultArgs = config.get<string[]>('defaultArgs', []);
@@ -160,16 +212,102 @@ export class SessionManager {
     terminal.sendText(commandLine, true);
     terminal.show();
 
+    const now = new Date();
     const session: ClaudeSession = {
       id,
       name,
       cwd,
+      kind: 'cli',
       terminal,
-      startedAt: new Date(),
+      startedAt: now,
       status: 'idle',
       manuallyRenamed: false,
       usage: emptyUsage(),
       jsonlPath: knownJsonlPath,
+      lastActivityAt: now,
+    };
+    this.sessions.set(id, session);
+    this.persist();
+    this._onDidChange.fire();
+    return session;
+  }
+
+  /**
+   * Open a tab in the official `anthropic.claude-code` extension via its
+   * documented URI handler, and track a shadow entry here. We don't own
+   * the lifecycle — the user closes the tab themselves.
+   */
+  private createExtensionShadow(opts: {
+    name?: string;
+    cwd?: string;
+    resumeSessionId?: string;
+  }): ClaudeSession {
+    const cwd = opts.cwd ?? this.defaultCwd();
+    const id = `claude-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const name = opts.name ?? this.suggestName(cwd);
+
+    const params = opts.resumeSessionId
+      ? `?session=${encodeURIComponent(opts.resumeSessionId)}`
+      : '';
+    const uri = vscode.Uri.parse(`vscode://anthropic.claude-code/open${params}`);
+    void vscode.env.openExternal(uri);
+
+    // For resumes the JSONL file already exists; pre-seed the path so the
+    // detector tails it directly instead of waiting for a "new" file.
+    const knownJsonlPath = opts.resumeSessionId
+      ? this.jsonlPathFor(cwd, opts.resumeSessionId)
+      : undefined;
+
+    const now = new Date();
+    const session: ClaudeSession = {
+      id,
+      name,
+      cwd,
+      kind: 'extension',
+      terminal: undefined,
+      startedAt: now,
+      status: 'idle',
+      manuallyRenamed: false,
+      usage: emptyUsage(),
+      jsonlPath: knownJsonlPath,
+      extensionSessionId: opts.resumeSessionId,
+      lastActivityAt: now,
+    };
+    this.sessions.set(id, session);
+    this.persist();
+    this._onDidChange.fire();
+    return session;
+  }
+
+  /**
+   * Adopt a Claude Code session started outside of this manager (e.g. via the
+   * official extension's own UI, or a bare `claude` CLI). The detector picks
+   * up the JSONL feed immediately since `jsonlPath` is pre-set. Used by
+   * AutoDiscovery; does not fire the URI handler.
+   */
+  importExtensionSession(opts: {
+    cwd: string;
+    name?: string;
+    extensionSessionId: string;
+    jsonlPath: string;
+    startedAt?: Date;
+  }): ClaudeSession {
+    const id = `claude-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const name = opts.name ?? this.suggestName(opts.cwd);
+    const startedAt = opts.startedAt ?? new Date();
+    const session: ClaudeSession = {
+      id,
+      name,
+      cwd: opts.cwd,
+      kind: 'extension',
+      terminal: undefined,
+      startedAt,
+      status: 'idle',
+      manuallyRenamed: false,
+      usage: emptyUsage(),
+      jsonlPath: opts.jsonlPath,
+      extensionSessionId: opts.extensionSessionId,
+      lastActivityAt: new Date(),
     };
     this.sessions.set(id, session);
     this.persist();
@@ -180,7 +318,25 @@ export class SessionManager {
   focus(id: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
-    session.terminal.show(false);
+    if (session.kind === 'cli') {
+      session.terminal?.show(false);
+      return;
+    }
+    // Extension shadow. If we know the JSONL session id, fire the URI
+    // handler with `?session=<id>` — per the official docs, that focuses
+    // an already-open tab or re-opens the prior conversation. Without the
+    // id we'd open a fresh tab, which is misleading.
+    if (session.extensionSessionId) {
+      const uri = vscode.Uri.parse(
+        `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session.extensionSessionId)}`
+      );
+      void vscode.env.openExternal(uri);
+      return;
+    }
+    vscode.window.setStatusBarMessage(
+      `"${session.name}" hasn't been claimed yet — send a prompt in its tab so the manager can capture its session id.`,
+      4000
+    );
   }
 
   setStatus(id: string, status: SessionStatus): void {
@@ -192,6 +348,48 @@ export class SessionManager {
     this._onDidChangeStatus.fire({ id, from, to: status });
     this._onDidChange.fire();
     // status is ephemeral, not persisted
+  }
+
+  /**
+   * Detector calls this whenever a session's JSONL grows. No event fire —
+   * a hot path for every read; the lifecycle monitor reads the field
+   * directly on its periodic tick.
+   */
+  bumpActivity(id: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    session.lastActivityAt = new Date();
+  }
+
+  /**
+   * Mark a session as `exited` without removing it from the list. Used by
+   * the lifecycle monitor when the JSONL has been quiet too long or the
+   * Claude Code tab was closed.
+   */
+  markExited(id: string): void {
+    this.setStatus(id, 'exited');
+  }
+
+  /**
+   * Drop every session currently in the `exited` state. Returns the count
+   * that was removed.
+   */
+  clearClosed(): number {
+    let count = 0;
+    for (const [id, s] of Array.from(this.sessions.entries())) {
+      if (s.status !== 'exited') continue;
+      if (s.kind === 'cli' && s.terminal) {
+        // Defensive: terminal should already be disposed in this state.
+        s.terminal.dispose();
+      }
+      this.sessions.delete(id);
+      count++;
+    }
+    if (count > 0) {
+      this.persist();
+      this._onDidChange.fire();
+    }
+    return count;
   }
 
   /**
@@ -257,20 +455,40 @@ export class SessionManager {
     // No event fire — purely internal bookkeeping.
   }
 
+  /**
+   * Internal: detector calls this once it has claimed a JSONL file for an
+   * extension shadow. Persists so the id survives across reloads.
+   */
+  setExtensionSessionId(id: string, extensionSessionId: string): void {
+    const session = this.sessions.get(id);
+    if (!session) return;
+    if (session.extensionSessionId === extensionSessionId) return;
+    session.extensionSessionId = extensionSessionId;
+    this.persist();
+    // No onDidChange fire — UI doesn't render this directly.
+  }
+
   async kill(id: string, opts: { confirm?: boolean } = {}): Promise<boolean> {
     const session = this.sessions.get(id);
     if (!session) return false;
 
+    const isShadow = session.kind === 'extension';
     if (opts.confirm) {
+      const verb = isShadow ? 'Remove' : 'Kill';
+      const message = isShadow
+        ? `Remove "${session.name}" from the list? The Claude Code extension's tab will not be closed.`
+        : `Kill Claude session "${session.name}"?`;
       const choice = await vscode.window.showWarningMessage(
-        `Kill Claude session "${session.name}"?`,
+        message,
         { modal: true },
-        'Kill'
+        verb
       );
-      if (choice !== 'Kill') return false;
+      if (choice !== verb) return false;
     }
 
-    session.terminal.dispose();
+    if (session.kind === 'cli' && session.terminal) {
+      session.terminal.dispose();
+    }
     this.sessions.delete(id);
     this.persist();
     this._onDidChange.fire();
@@ -281,7 +499,7 @@ export class SessionManager {
     if (this.sessions.size === 0) return 0;
     if (opts.confirm) {
       const choice = await vscode.window.showWarningMessage(
-        `Kill all ${this.sessions.size} Claude session(s)?`,
+        `Kill all ${this.sessions.size} Claude session(s)? Extension tabs will not be closed; their entries will just be removed from the list.`,
         { modal: true },
         'Kill All'
       );
@@ -289,7 +507,9 @@ export class SessionManager {
     }
     const count = this.sessions.size;
     for (const session of this.sessions.values()) {
-      session.terminal.dispose();
+      if (session.kind === 'cli' && session.terminal) {
+        session.terminal.dispose();
+      }
     }
     this.sessions.clear();
     this.persist();
@@ -300,6 +520,13 @@ export class SessionManager {
   sendPrompt(id: string, prompt: string): void {
     const session = this.sessions.get(id);
     if (!session) return;
+    if (session.kind !== 'cli' || !session.terminal) {
+      vscode.window.setStatusBarMessage(
+        `"${session.name}" is owned by the Claude Code extension — type prompts in its tab directly.`,
+        4000
+      );
+      return;
+    }
     session.terminal.show(false);
     session.terminal.sendText(prompt, true);
   }
@@ -309,7 +536,9 @@ export class SessionManager {
     // we deliberately do NOT clear it here so sessions can be restored next launch.
     this.disposing = true;
     for (const session of this.sessions.values()) {
-      session.terminal.dispose();
+      if (session.kind === 'cli' && session.terminal) {
+        session.terminal.dispose();
+      }
     }
     this.sessions.clear();
     this._onDidChange.dispose();
@@ -327,16 +556,28 @@ export class SessionManager {
   }
 
   /**
-   * Spawn a fresh session for each persisted record. Returns the number created.
-   * Skips records whose cwd duplicates an already-running session to avoid noise.
+   * Spawn / re-open a fresh session for each persisted record. Returns the
+   * number created. Skips records whose cwd duplicates an already-running
+   * CLI session to avoid noise.
+   *
+   * For `kind: 'extension'` records the URI handler is fired with
+   * `?session=<extensionSessionId>` so the official extension resumes the
+   * prior conversation if it can find the JSONL log; falls back to a fresh
+   * tab if the id isn't known. See design log #05.
    */
   restorePersisted(): number {
     const records = this.getPersisted();
     const liveCwds = new Set(Array.from(this.sessions.values()).map((s) => s.cwd));
     let created = 0;
     for (const r of records) {
-      if (liveCwds.has(r.cwd)) continue;
-      const session = this.create({ name: r.name, cwd: r.cwd });
+      const recKind: SessionKind = r.kind ?? 'cli';
+      if (recKind === 'cli' && liveCwds.has(r.cwd)) continue;
+      const session = this.create({
+        name: r.name,
+        cwd: r.cwd,
+        kind: recKind,
+        resumeSessionId: recKind === 'extension' ? r.extensionSessionId : undefined,
+      });
       if (r.manuallyRenamed) session.manuallyRenamed = true;
       created++;
     }
@@ -348,6 +589,8 @@ export class SessionManager {
       name: s.name,
       cwd: s.cwd,
       manuallyRenamed: s.manuallyRenamed || undefined,
+      kind: s.kind,
+      extensionSessionId: s.kind === 'extension' ? s.extensionSessionId : undefined,
     }));
     this.context.workspaceState.update(PERSIST_KEY, records);
   }

@@ -7,7 +7,7 @@ import {
   WindowManifest,
   ManifestSession,
 } from './manifestPublisher';
-import { SessionStatus, SessionUsage } from './sessionManager';
+import { SessionStatus, SessionUsage, SessionKind } from './sessionManager';
 
 const FRESHNESS_TTL_MS = 30_000;
 const SWEEP_TTL_MS = 120_000;
@@ -27,6 +27,8 @@ export interface ExternalSession {
   jsonlPath?: string;
   manuallyRenamed: boolean;
   usage: SessionUsage;
+  /** Defaults to 'cli' for manifests that pre-date the field. */
+  kind?: SessionKind;
 }
 
 /**
@@ -229,6 +231,7 @@ function toExternal(
     jsonlPath: s.jsonlPath,
     manuallyRenamed: !!s.manuallyRenamed,
     usage: s.usage,
+    kind: s.kind ?? 'cli',
   };
 }
 
@@ -249,6 +252,7 @@ function stableSerialize(list: ExternalSession[]): string {
       jsonlPath: s.jsonlPath,
       manuallyRenamed: s.manuallyRenamed,
       usage: s.usage,
+      kind: s.kind,
     }))
   );
 }

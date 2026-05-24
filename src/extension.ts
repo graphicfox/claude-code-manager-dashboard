@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SessionManager, STATUS_ORDER, SessionStatus } from './sessionManager';
+import { SessionManager, STATUS_ORDER, SessionStatus, SessionKind } from './sessionManager';
 import { SessionWebviewProvider } from './sessionWebviewProvider';
 import { DashboardPanel } from './dashboard';
 import { StatusDetector } from './statusDetector';
@@ -7,6 +7,8 @@ import { Notifier } from './notifier';
 import { listRecentSessions, pickRecentLabel } from './recentSessions';
 import { ManifestPublisher } from './manifestPublisher';
 import { ExternalSessionTracker } from './externalSessionTracker';
+import { AutoDiscovery } from './autoDiscovery';
+import { LifecycleMonitor } from './lifecycleMonitor';
 import {
   CrossWindowCommandSender,
   CrossWindowCommandReceiver,
@@ -26,13 +28,18 @@ export function activate(context: vscode.ExtensionContext): void {
       // The clicker handles OS-level window activation by running `code
       // <folder>` itself. Here we just surface the right terminal so it's
       // already foregrounded within this window when it comes up.
-      session.terminal.show(false);
+      // Extension shadows have no terminal — nothing to surface here.
+      session.terminal?.show(false);
     }
   );
   const webviewProvider = new SessionWebviewProvider(context, manager, tracker, sender);
   const detector = new StatusDetector(manager);
   const notifier = new Notifier(manager, webviewProvider, tracker);
-  context.subscriptions.push(detector, notifier, publisher, tracker, receiver);
+  const autoDiscovery = new AutoDiscovery(manager);
+  const lifecycle = new LifecycleMonitor(manager);
+  context.subscriptions.push(
+    detector, notifier, publisher, tracker, receiver, autoDiscovery, lifecycle
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -132,6 +139,27 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.setStatusBarMessage(`Claude session "${session.name}" started`, 3000);
     }),
 
+    vscode.commands.registerCommand('claudeCodeManager.newSessionChooseType', async () => {
+      const pick = await vscode.window.showQuickPick(
+        [
+          {
+            label: '$(terminal) Terminal',
+            description: 'Spawn the claude CLI in a new integrated terminal',
+            sessionKind: 'cli' as SessionKind,
+          },
+          {
+            label: '$(window) Claude Code Extension',
+            description: 'Open a tab in the official anthropic.claude-code extension',
+            sessionKind: 'extension' as SessionKind,
+          },
+        ],
+        { placeHolder: 'Where should this session run?' }
+      );
+      if (!pick) return;
+      const session = manager.create({ kind: pick.sessionKind });
+      vscode.window.setStatusBarMessage(`Claude session "${session.name}" started`, 3000);
+    }),
+
     vscode.commands.registerCommand('claudeCodeManager.newSessionInFolder', async () => {
       const picked = await vscode.window.showOpenDialog({
         canSelectFiles: false,
@@ -140,7 +168,9 @@ export function activate(context: vscode.ExtensionContext): void {
         openLabel: 'Start Claude here',
       });
       if (!picked || picked.length === 0) return;
-      manager.create({ cwd: picked[0].fsPath });
+      // Always CLI: the URI handler has no cwd parameter, so honouring a
+      // custom folder requires a terminal regardless of `sessionType`.
+      manager.create({ cwd: picked[0].fsPath, kind: 'cli' });
     }),
 
     vscode.commands.registerCommand(
@@ -169,6 +199,15 @@ export function activate(context: vscode.ExtensionContext): void {
         .get<boolean>('confirmKill', true);
       const n = await manager.killAll({ confirm });
       if (n > 0) vscode.window.setStatusBarMessage(`Killed ${n} session(s)`, 3000);
+    }),
+
+    vscode.commands.registerCommand('claudeCodeManager.clearClosedSessions', () => {
+      const n = manager.clearClosed();
+      if (n > 0) {
+        vscode.window.setStatusBarMessage(`Cleared ${n} closed session(s)`, 3000);
+      } else {
+        vscode.window.setStatusBarMessage('No closed sessions to clear', 2000);
+      }
     }),
 
     vscode.commands.registerCommand(
@@ -240,10 +279,15 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       );
       if (!pick) return;
+      const configured = vscode.workspace
+        .getConfiguration('claudeCodeManager')
+        .get<string>('sessionType', 'terminal');
+      const kind: SessionKind = configured === 'extension' ? 'extension' : 'cli';
       manager.create({
         cwd: pick.session.cwd,
         resumeSessionId: pick.session.sessionId,
         name: pick.session.title,
+        kind,
       });
     }),
 

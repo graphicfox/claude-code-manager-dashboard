@@ -92,6 +92,15 @@ export class DashboardPanel {
               await this.sender.requestFocus(msg.windowId, msg.id);
             }
             break;
+          case 'openSettings':
+            await vscode.commands.executeCommand(
+              'workbench.action.openSettings',
+              '@ext:kimmartini.claude-code-manager'
+            );
+            break;
+          case 'clearClosed':
+            await vscode.commands.executeCommand('claudeCodeManager.clearClosedSessions');
+            break;
         }
       },
       null,
@@ -117,6 +126,8 @@ export class DashboardPanel {
       status: s.status,
       startedAt: s.startedAt.toISOString(),
       usage: s.usage,
+      kind: s.kind,
+      hasExtSessionId: !!s.extensionSessionId,
       external: false as const,
     }));
     const showExternal = vscode.workspace
@@ -130,6 +141,7 @@ export class DashboardPanel {
       status: s.status,
       startedAt: s.startedAt.toISOString(),
       usage: s.usage,
+      kind: s.kind ?? 'cli',
       windowId: s.windowId,
       workspaceFolder: s.workspaceFolder,
       workspaceName: s.workspaceName,
@@ -240,6 +252,22 @@ export class DashboardPanel {
     color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
     font-weight: 600;
   }
+  .kind-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(140, 90, 220, 0.18);
+    color: #c39bff;
+    font-weight: 600;
+  }
+  .actions button[disabled],
+  .prompt-row input[disabled],
+  .prompt-row button[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
   .section-header {
     margin: 18px 0 10px;
     font-size: 11px;
@@ -247,6 +275,17 @@ export class DashboardPanel {
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--vscode-descriptionForeground);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .section-count {
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background, rgba(140,140,140,0.25));
+    color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+    letter-spacing: 0.4px;
   }
   .meta { font-size: 11px; color: var(--vscode-descriptionForeground); }
   .cwd { font-family: var(--vscode-editor-font-family); word-break: break-all; }
@@ -302,7 +341,11 @@ export class DashboardPanel {
     <h1>Claude Code Sessions</h1>
     <div class="stats" id="stats"></div>
   </div>
-  <button id="new">+ New Session</button>
+  <div style="display:flex; gap:6px;">
+    <button id="clearClosed" class="secondary" style="display:none;" title="Remove sessions in the Exited state">Clear closed</button>
+    <button id="settings" class="secondary" title="Open Claude Code Manager settings">⚙ Settings</button>
+    <button id="new">+ New Session</button>
+  </div>
 </header>
 <div id="totals"></div>
 <div id="root"></div>
@@ -315,6 +358,9 @@ export class DashboardPanel {
   const root = document.getElementById('root');
   const stats = document.getElementById('stats');
   document.getElementById('new').onclick = () => vscode.postMessage({ command: 'newSession' });
+  document.getElementById('settings').onclick = () => vscode.postMessage({ command: 'openSettings' });
+  const clearClosedBtn = document.getElementById('clearClosed');
+  clearClosedBtn.onclick = () => vscode.postMessage({ command: 'clearClosed' });
 
   function fmtTime(iso) {
     const d = new Date(iso);
@@ -327,6 +373,13 @@ export class DashboardPanel {
 
   function escape(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function lastSeg(p) {
+    if (!p) return '';
+    const trimmed = String(p).replace(/[/\\\\]+$/, '');
+    const i = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\\\'));
+    return i >= 0 ? trimmed.slice(i + 1) : trimmed;
   }
 
   function fmtTokens(n) {
@@ -356,33 +409,50 @@ export class DashboardPanel {
   }
 
   function localCardHtml(s) {
+    const isExt = s.kind === 'extension';
     const usage = usageLine(s.usage);
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const promptRow = isExt
+      ? \`<div class="prompt-row">
+          <input type="text" placeholder="Type prompts directly in the extension tab" disabled>
+          <button class="secondary" disabled>Send</button>
+        </div>\`
+      : \`<div class="prompt-row">
+          <input type="text" placeholder="Send prompt..." data-prompt-for="\${s.id}">
+          <button class="secondary" data-send="\${s.id}">Send</button>
+        </div>\`;
+    const focusBtn = isExt
+      ? (s.hasExtSessionId
+        ? \`<button data-focus="\${s.id}" title="Focus the Claude Code extension tab for this session">Focus</button>\`
+        : '<button disabled title="Send a prompt in the extension tab so the manager can capture this session\\u2019s id, then Focus will jump to it.">Focus</button>')
+      : \`<button data-focus="\${s.id}">Focus</button>\`;
+    const killLabel = isExt ? 'Remove' : 'Kill';
+    const killTitle = isExt ? 'Remove from list (does not close the extension tab)' : 'Kill the CLI session';
     return \`
       <div class="card s-\${s.status}" data-id="\${s.id}">
-        <h2>\${escape(s.name)} <span class="status-pill s-\${s.status}">\${s.status}</span></h2>
+        <h2>\${escape(s.name)} <span class="status-pill s-\${s.status}">\${s.status}</span> \${kindTag}</h2>
         <div class="meta">Started \${fmtTime(s.startedAt)}</div>
         <div class="meta cwd">\${escape(s.cwd)}</div>
         \${usage ? '<div class="usage">' + escape(usage) + '</div>' : ''}
-        <div class="prompt-row">
-          <input type="text" placeholder="Send prompt..." data-prompt-for="\${s.id}">
-          <button class="secondary" data-send="\${s.id}">Send</button>
-        </div>
+        \${promptRow}
         <div class="actions">
-          <button data-focus="\${s.id}">Focus</button>
+          \${focusBtn}
           <button class="secondary" data-rename="\${s.id}">Rename</button>
-          <button class="secondary" data-kill="\${s.id}">Kill</button>
+          <button class="secondary" data-kill="\${s.id}" title="\${killTitle}">\${killLabel}</button>
         </div>
       </div>\`;
   }
 
   function externalCardHtml(s) {
+    const isExt = s.kind === 'extension';
     const usage = usageLine(s.usage);
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
     return \`
       <div class="card external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
         <h2>
           \${escape(s.name)}
           <span class="status-pill s-\${s.status}">\${s.status}</span>
-          <span class="external-tag">Other window</span>
+          \${kindTag}
         </h2>
         <div class="meta">Started \${fmtTime(s.startedAt)}</div>
         <div class="meta cwd">\${escape(s.cwd)}</div>
@@ -392,8 +462,15 @@ export class DashboardPanel {
 
   function render() {
     const total = data.sessions.length + data.externals.length;
+    const closed = data.sessions.filter(function (s) { return s.status === 'exited'; }).length;
     stats.textContent = total + ' active session' + (total === 1 ? '' : 's') +
       (data.externals.length > 0 ? ' (' + data.sessions.length + ' here, ' + data.externals.length + ' other)' : '');
+    if (closed > 0) {
+      clearClosedBtn.style.display = '';
+      clearClosedBtn.textContent = 'Clear ' + closed + ' closed';
+    } else {
+      clearClosedBtn.style.display = 'none';
+    }
 
     const totalsEl = document.getElementById('totals');
     const localHas = totals.local.input + totals.local.output > 0;
@@ -423,8 +500,23 @@ export class DashboardPanel {
       html += '<div class="grid">' + data.sessions.map(localCardHtml).join('') + '</div>';
     }
     if (data.externals.length > 0) {
-      html += '<div class="section-header">Other windows</div>';
-      html += '<div class="grid">' + data.externals.map(externalCardHtml).join('') + '</div>';
+      const groups = new Map();
+      for (const s of data.externals) {
+        const key = s.windowId || '__unknown';
+        if (!groups.has(key)) {
+          groups.set(key, {
+            label: s.workspaceName || lastSeg(s.workspaceFolder || '') || 'Other window',
+            sessions: [],
+          });
+        }
+        groups.get(key).sessions.push(s);
+      }
+      for (const g of groups.values()) {
+        const count = g.sessions.length;
+        html += '<div class="section-header">' + escape(g.label) +
+          ' <span class="section-count">' + count + '</span></div>';
+        html += '<div class="grid">' + g.sessions.map(externalCardHtml).join('') + '</div>';
+      }
     }
     root.innerHTML = html;
 

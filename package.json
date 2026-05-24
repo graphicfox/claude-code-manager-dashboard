@@ -62,6 +62,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "claudeCodeManager.newSessionChooseType",
+        "title": "Claude: New Session (Choose Type)...",
+        "icon": "$(list-selection)"
+      },
+      {
         "command": "claudeCodeManager.newSessionInFolder",
         "title": "Claude: New Session in Folder...",
         "icon": "$(folder-opened)"
@@ -80,6 +85,11 @@
         "command": "claudeCodeManager.killAll",
         "title": "Claude: Kill All Sessions",
         "icon": "$(close-all)"
+      },
+      {
+        "command": "claudeCodeManager.clearClosedSessions",
+        "title": "Claude: Clear Closed Sessions",
+        "icon": "$(clear-all)"
       },
       {
         "command": "claudeCodeManager.renameSession",
@@ -130,6 +140,11 @@
           "group": "navigation@1"
         },
         {
+          "command": "claudeCodeManager.newSessionChooseType",
+          "when": "view == claudeCodeSessions",
+          "group": "navigation@1.5"
+        },
+        {
           "command": "claudeCodeManager.resumeSession",
           "when": "view == claudeCodeSessions",
           "group": "navigation@2"
@@ -148,12 +163,30 @@
           "command": "claudeCodeManager.killAll",
           "when": "view == claudeCodeSessions",
           "group": "overflow@1"
+        },
+        {
+          "command": "claudeCodeManager.clearClosedSessions",
+          "when": "view == claudeCodeSessions",
+          "group": "overflow@2"
         }
       ]
     },
     "configuration": {
       "title": "Claude Code Manager",
       "properties": {
+        "claudeCodeManager.sessionType": {
+          "type": "string",
+          "enum": [
+            "terminal",
+            "extension"
+          ],
+          "default": "terminal",
+          "description": "Default kind of session to create from 'New Session'. 'terminal' spawns the Claude Code CLI in an integrated terminal (full control). 'extension' opens a tab in the official Anthropic Claude Code VS Code extension; sessions are tracked here as shadow entries with limited actions.",
+          "enumDescriptions": [
+            "Spawn the `claude` CLI in a new integrated terminal",
+            "Open a tab in the official anthropic.claude-code extension via vscode://anthropic.claude-code/open"
+          ]
+        },
         "claudeCodeManager.cliPath": {
           "type": "string",
           "default": "claude",
@@ -202,6 +235,20 @@
           "default": true,
           "description": "Auto-detect session status (Idle/Busy/Question/Permission/Done) by tailing the JSONL logs Claude Code writes under ~/.claude/projects/."
         },
+        "claudeCodeManager.autoStatus.permissionThresholdMs": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 500,
+          "maximum": 30000,
+          "description": "How long a session can sit in Busy with a pending tool_use before being escalated to Permission. Lower = snappier reaction when Claude pauses to ask permission, but long-running tools (Bash, etc.) may briefly look like permission waits."
+        },
+        "claudeCodeManager.autoExit.idleMs": {
+          "type": "number",
+          "default": 600000,
+          "minimum": 60000,
+          "maximum": 86400000,
+          "description": "Mark a session as Exited when its JSONL log hasn't been written for this long (ms). Set to 0 to disable. Closed extension tabs and dormant CLI sessions get flipped to Exited so the 'Clear closed' button can purge them."
+        },
         "claudeCodeManager.autoRename.enabled": {
           "type": "boolean",
           "default": true,
@@ -226,6 +273,25 @@
           "type": "boolean",
           "default": true,
           "description": "Show Claude sessions running in other VS Code windows on this machine. External sessions are read-only — click a card to bring the owning window forward."
+        },
+        "claudeCodeManager.autoDiscovery.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Periodically scan ~/.claude/projects/<cwd>/ for active JSONL files and adopt sessions started outside of this manager (e.g. via the official Claude Code extension or a bare `claude` CLI). Picked-up sessions appear as Extension shadow entries with auto-status enabled."
+        },
+        "claudeCodeManager.autoDiscovery.intervalMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 2000,
+          "maximum": 300000,
+          "description": "How often (in ms) to scan for new sessions when auto-discovery is enabled."
+        },
+        "claudeCodeManager.autoDiscovery.freshnessMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 5000,
+          "maximum": 3600000,
+          "description": "Only adopt JSONL files whose last write happened within this many ms. Older files are considered dormant and skipped."
         }
       }
     }

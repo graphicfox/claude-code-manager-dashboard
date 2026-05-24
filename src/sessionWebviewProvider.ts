@@ -5,6 +5,7 @@ import {
   SessionStatus,
   STATUS_ORDER,
   SessionUsage,
+  SessionKind,
 } from './sessionManager';
 import { ExternalSessionTracker, ExternalSession } from './externalSessionTracker';
 import { CrossWindowCommandSender, revealVSCodeWindow } from './crossWindowCommands';
@@ -18,6 +19,9 @@ interface SessionVM {
   startedAt: string;
   usageLine: string;
   external: boolean;
+  kind: SessionKind;
+  /** True for extension shadows whose JSONL session id has been claimed. */
+  hasExtSessionId: boolean;
   windowId?: string;
   workspaceFolder?: string;
   workspaceName?: string;
@@ -110,6 +114,15 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
         case 'openDashboard':
           await vscode.commands.executeCommand('claudeCodeManager.openDashboard');
           break;
+        case 'openSettings':
+          await vscode.commands.executeCommand(
+            'workbench.action.openSettings',
+            '@ext:kimmartini.claude-code-manager'
+          );
+          break;
+        case 'clearClosed':
+          await vscode.commands.executeCommand('claudeCodeManager.clearClosedSessions');
+          break;
       }
     });
 
@@ -147,6 +160,8 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       startedAt: s.startedAt.toISOString(),
       usageLine: formatUsageLineFromUsage(s.usage),
       external: false,
+      kind: s.kind,
+      hasExtSessionId: !!s.extensionSessionId,
     };
   }
 
@@ -160,6 +175,10 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       startedAt: s.startedAt.toISOString(),
       usageLine: formatUsageLineFromUsage(s.usage),
       external: true,
+      kind: s.kind ?? 'cli',
+      // External sessions don't expose their extensionSessionId today; the
+      // owning window handles focus via cross-window IPC, so this is fine.
+      hasExtSessionId: false,
       windowId: s.windowId,
       workspaceFolder: s.workspaceFolder,
       workspaceName: s.workspaceName,
@@ -169,7 +188,8 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
   private render(local: SessionVM[], external: SessionVM[]): string {
     const nonce = getNonce();
     const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-    const data = JSON.stringify({ local, external }).replace(/</g, '\\u003c');
+    const closedCount = local.filter((s) => s.status === 'exited').length;
+    const data = JSON.stringify({ local, external, closedCount }).replace(/</g, '\\u003c');
     const statusOrder = JSON.stringify(STATUS_ORDER);
 
     return /* html */ `<!DOCTYPE html>
@@ -206,6 +226,32 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     color: var(--vscode-button-secondaryForeground);
   }
   .toolbar button:hover { filter: brightness(1.1); }
+  .closed-bar {
+    width: 100%;
+    margin-bottom: 8px;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    border: 1px dashed var(--vscode-panel-border);
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: pointer;
+    text-align: center;
+  }
+  .closed-bar:hover {
+    color: var(--vscode-foreground);
+    border-color: var(--vscode-focusBorder);
+  }
+  .toolbar button.icon-only {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    min-width: 32px;
+    font-size: 18px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
 
   .session {
     border: 1px solid var(--vscode-panel-border);
@@ -239,6 +285,20 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
     font-weight: 600;
   }
+  .kind-tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: rgba(140, 90, 220, 0.18);
+    color: #c39bff;
+    font-weight: 600;
+  }
+  .actions button[disabled] {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
   .section-header {
     margin: 14px 2px 6px;
     font-size: 10px;
@@ -246,6 +306,17 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--vscode-descriptionForeground);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .section-count {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--vscode-badge-background, rgba(140,140,140,0.25));
+    color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+    letter-spacing: 0.4px;
   }
 
   .row {
@@ -365,7 +436,9 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 <div class="toolbar">
   <button id="new">+ New Session</button>
   <button id="dashboard" class="secondary" title="Open Dashboard">Dashboard</button>
+  <button id="settings" class="secondary icon-only" title="Open Claude Code Manager settings">⚙</button>
 </div>
+<div id="closedBar"></div>
 <div id="root"></div>
 
 <script nonce="${nonce}">
@@ -386,47 +459,76 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
   document.getElementById('new').onclick = () => vscode.postMessage({ command: 'newSession' });
   document.getElementById('dashboard').onclick = () => vscode.postMessage({ command: 'openDashboard' });
+  document.getElementById('settings').onclick = () => vscode.postMessage({ command: 'openSettings' });
+
+  const closedBar = document.getElementById('closedBar');
+  if (data.closedCount > 0) {
+    closedBar.innerHTML = \`<button id="clearClosed" class="closed-bar">\${data.closedCount} closed · clear</button>\`;
+    document.getElementById('clearClosed').onclick = () => vscode.postMessage({ command: 'clearClosed' });
+  } else {
+    closedBar.innerHTML = '';
+  }
 
   function escape(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  function lastSeg(p) {
+    if (!p) return '';
+    const trimmed = String(p).replace(/[/\\\\]+$/, '');
+    const i = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\\\'));
+    return i >= 0 ? trimmed.slice(i + 1) : trimmed;
+  }
+
   function localCard(s) {
+    const isExt = s.kind === 'extension';
     const statusButtons = STATUSES.map(st => \`
       <button class="s-\${st} \${s.status === st ? 'active' : ''}" data-set-status="\${st}" data-id="\${s.id}" title="Mark as \${LABELS[st]}">\${LABELS[st]}</button>
     \`).join('');
     const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const focusBtn = isExt
+      ? (s.hasExtSessionId
+        ? \`<button data-focus="\${s.id}" title="Focus the Claude Code extension tab for this session">Focus</button>\`
+        : '<button disabled title="Send a prompt in the extension tab so the manager can capture this session\\u2019s id, then Focus will jump to it.">Focus</button>')
+      : \`<button data-focus="\${s.id}">Focus</button>\`;
+    const promptBtn = isExt
+      ? '<button disabled title="Type prompts directly in the Claude Code extension tab.">Send…</button>'
+      : \`<button data-prompt="\${s.id}">Send…</button>\`;
+    const killLabel = isExt ? 'Remove' : 'Kill';
+    const killTitle = isExt ? 'Remove from list (does not close the extension tab)' : 'Kill the CLI session';
     return \`
       <div class="session s-\${s.status}" data-id="\${s.id}">
         <div class="row">
-          <span class="name" data-focus="\${s.id}">\${escape(s.name)}</span>
+          <span class="name" \${isExt ? '' : \`data-focus="\${s.id}"\`}>\${escape(s.name)}</span>
+          \${kindTag}
           <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
         </div>
         <div class="cwd">\${escape(s.cwdRelative || s.cwd)}</div>
         \${usage}
         <div class="status-row">\${statusButtons}</div>
         <div class="actions">
-          <button data-focus="\${s.id}">Focus</button>
-          <button data-prompt="\${s.id}">Send…</button>
+          \${focusBtn}
+          \${promptBtn}
           <button data-rename="\${s.id}">Rename</button>
-          <button class="danger" data-kill="\${s.id}">Kill</button>
+          <button class="danger" data-kill="\${s.id}" title="\${killTitle}">\${killLabel}</button>
         </div>
       </div>
     \`;
   }
 
   function externalCard(s) {
+    const isExt = s.kind === 'extension';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
     const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
     return \`
       <div class="session external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
         <div class="row">
           <span class="name">\${escape(s.name)}</span>
+          \${kindTag}
           <span class="status-pill s-\${s.status}">\${ICONS[s.status]}\${LABELS[s.status]}</span>
         </div>
-        <div class="row" style="gap:6px;">
-          <span class="external-tag">Other window</span>
-          <span class="cwd" style="flex:1;">\${escape(s.cwdRelative || s.cwd)}</span>
-        </div>
+        <div class="cwd">\${escape(s.cwdRelative || s.cwd)}</div>
         \${usage}
       </div>
     \`;
@@ -445,8 +547,22 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       html += data.local.map(localCard).join('');
     }
     if (data.external.length > 0) {
-      html += '<div class="section-header">Other windows</div>';
-      html += data.external.map(externalCard).join('');
+      const groups = new Map();
+      for (const s of data.external) {
+        const key = s.windowId || '__unknown';
+        if (!groups.has(key)) {
+          groups.set(key, {
+            label: s.workspaceName || lastSeg(s.workspaceFolder || '') || 'Other window',
+            sessions: [],
+          });
+        }
+        groups.get(key).sessions.push(s);
+      }
+      for (const g of groups.values()) {
+        const count = g.sessions.length;
+        html += \`<div class="section-header">\${escape(g.label)} <span class="section-count">\${count}</span></div>\`;
+        html += g.sessions.map(externalCard).join('');
+      }
     }
     root.innerHTML = html;
 

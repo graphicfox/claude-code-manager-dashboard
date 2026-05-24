@@ -6,6 +6,7 @@ import {
   SessionManager,
   SessionStatus,
   SessionUsage,
+  SessionKind,
   ClaudeSession,
 } from './sessionManager';
 
@@ -48,6 +49,8 @@ export interface ManifestSession {
   jsonlPath?: string;
   manuallyRenamed: boolean;
   usage: SessionUsage;
+  /** Defaults to 'cli' for manifests that pre-date the field. */
+  kind?: SessionKind;
 }
 
 /**
@@ -142,5 +145,6 @@ function toManifestSession(s: ClaudeSession): ManifestSession {
     jsonlPath: s.jsonlPath,
     manuallyRenamed: s.manuallyRenamed,
     usage: s.usage,
+    kind: s.kind,
   };
 }
