@@ -2,7 +2,7 @@
   "name": "claude-code-manager",
   "displayName": "Claude Code Manager",
   "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from your editor.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "kimmartini",
   "license": "MIT",
   "author": {
