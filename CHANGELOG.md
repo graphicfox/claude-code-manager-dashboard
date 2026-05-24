@@ -5,6 +5,13 @@ All notable changes to **Claude Code Manager** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.2.0...v0.3.0) (2026-05-24)
+
+
+### Features
+
+* extension-shadow sessions, auto-discovery, and lifecycle monitor ([fc55379](https://github.com/graphicfox/claude-code-manager-dashboard/commit/fc5537970db825c22eac3ac09bf7ca43bcd93b29))
+
 ## [0.2.0](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.1.1...v0.2.0) (2026-05-04)
 
 
