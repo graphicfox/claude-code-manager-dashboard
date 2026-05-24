@@ -5,6 +5,13 @@ All notable changes to **Claude Code Manager** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.3.0...v0.4.0) (2026-05-24)
+
+
+### Features
+
+* host-aware URIs and launcher lookup for VS Code forks ([c255b0b](https://github.com/graphicfox/claude-code-manager-dashboard/commit/c255b0b1110e9ccf665ca222220c6992a43deea0))
+
 ## [0.3.0](https://github.com/graphicfox/claude-code-manager-dashboard/compare/v0.2.0...v0.3.0) (2026-05-24)
 
 
