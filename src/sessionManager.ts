@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import { hostUriScheme } from './host';
 
 const PERSIST_KEY = 'claudeCodeManager.sessions.v1';
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
@@ -27,9 +28,10 @@ export const STATUS_ORDER: SessionStatus[] = [
  * - `cli` — spawned by us as a `claude` CLI process inside a `vscode.Terminal`
  *   that we own. Full control: focus, kill, sendPrompt, JSONL auto-status.
  * - `extension` — a "shadow" entry pointing at a tab in the official
- *   `anthropic.claude-code` extension. We open it via the URI handler and
- *   walk away; the official extension owns the lifecycle. Limited actions:
- *   rename, set status, remove from list. See design log #05.
+ *   `anthropic.claude-code` extension. We open it via the host editor's URI
+ *   handler and walk away; the official extension owns the lifecycle.
+ *   Limited actions: rename, set status, remove from list. See design log
+ *   #05 and #06.
  */
 export type SessionKind = 'cli' | 'extension';
 
@@ -236,6 +238,11 @@ export class SessionManager {
    * Open a tab in the official `anthropic.claude-code` extension via its
    * documented URI handler, and track a shadow entry here. We don't own
    * the lifecycle — the user closes the tab themselves.
+   *
+   * The URI scheme is read from the host (`vscode://` in VS Code,
+   * `antigravity-ide://` in Antigravity, etc.) so the OS routes the request
+   * back to the host that's actually running us, instead of waking up
+   * whichever editor happens to own the `vscode://` registration.
    */
   private createExtensionShadow(opts: {
     name?: string;
@@ -249,7 +256,9 @@ export class SessionManager {
     const params = opts.resumeSessionId
       ? `?session=${encodeURIComponent(opts.resumeSessionId)}`
       : '';
-    const uri = vscode.Uri.parse(`vscode://anthropic.claude-code/open${params}`);
+    const uri = vscode.Uri.parse(
+      `${hostUriScheme()}://anthropic.claude-code/open${params}`
+    );
     void vscode.env.openExternal(uri);
 
     // For resumes the JSONL file already exists; pre-seed the path so the
@@ -328,7 +337,7 @@ export class SessionManager {
     // id we'd open a fresh tab, which is misleading.
     if (session.extensionSessionId) {
       const uri = vscode.Uri.parse(
-        `vscode://anthropic.claude-code/open?session=${encodeURIComponent(session.extensionSessionId)}`
+        `${hostUriScheme()}://anthropic.claude-code/open?session=${encodeURIComponent(session.extensionSessionId)}`
       );
       void vscode.env.openExternal(uri);
       return;

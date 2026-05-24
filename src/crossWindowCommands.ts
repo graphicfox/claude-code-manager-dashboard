@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { exec, execFile } from 'child_process';
 import * as vscode from 'vscode';
+import { bundledHostCli, hostAppName } from './host';
 
 export const COMMANDS_DIR = path.join(
   os.homedir(),
@@ -167,22 +168,24 @@ export class CrossWindowCommandReceiver implements vscode.Disposable {
 }
 
 /**
- * Bring the VS Code window that has `workspaceFolder` open to the foreground.
+ * Bring the host editor window that has `workspaceFolder` open to the
+ * foreground.
  *
  * Path-based approaches (`code <folder>`, `open -a <app> <folder>`) all go
- * through VS Code's main process which performs case-canonicalization on the
- * input path; if the user's stored workspace URI was opened with a different
- * case (e.g. `/Users/kim/work/...` vs the canonical `/Users/kim/Work/...`)
- * the canonical input misses the stored URI and VS Code opens a *new*
- * window. So on macOS we identify the window by **title** instead, via
- * AppleScript + System Events / AXRaise — which is path-resolution-proof.
+ * through the editor's main process which performs case-canonicalization on
+ * the input path; if the user's stored workspace URI was opened with a
+ * different case (e.g. `/Users/kim/work/...` vs the canonical
+ * `/Users/kim/Work/...`) the canonical input misses the stored URI and a
+ * *new* window opens. So on macOS we identify the window by **title**
+ * instead, via AppleScript + System Events / AXRaise — which is
+ * path-resolution-proof.
  *
  * Note: the AXRaise call needs Accessibility permission for the calling
  * process. macOS prompts on first attempt; once granted, subsequent
  * attempts work silently.
  *
- * Linux / Windows: fall back to the bundled `code` CLI which doesn't have
- * the same case-collision issue.
+ * Linux / Windows: fall back to the bundled launcher CLI (`code`,
+ * `antigravity-ide`, …) which doesn't have the same case-collision issue.
  *
  * Failures are silent.
  */
@@ -200,20 +203,21 @@ export function revealVSCodeWindow(
     }
 
     if (wf) {
-      const codeBin = bundledCodeBin();
-      if (codeBin) {
-        execFile(codeBin, [wf], () => undefined);
-      } else {
-        exec(`code ${quote(wf)}`, () => undefined);
+      const cli = bundledHostCli();
+      if (cli) {
+        execFile(cli, [wf], () => undefined);
       }
+      // No fallback: without the bundled launcher we have no host-correct
+      // way to wake the right window, and `code` on PATH would resolve to
+      // VS Code regardless of which fork we're running in.
       return;
     }
 
     if (process.platform === 'linux') {
-      exec(`wmctrl -a ${quote(vscode.env.appName || 'Visual Studio Code')}`, () => undefined);
+      exec(`wmctrl -a ${quote(hostAppName())}`, () => undefined);
     } else if (process.platform === 'win32') {
       exec(
-        `powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${jsonString(vscode.env.appName || 'Visual Studio Code')})"`,
+        `powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${jsonString(hostAppName())})"`,
         () => undefined
       );
     }
@@ -228,10 +232,11 @@ function revealMacOS(
   workspaceFolder: string | undefined,
   workspaceName: string | undefined
 ): void {
-  const appName = vscode.env.appName || 'Visual Studio Code';
+  const appName = hostAppName();
   // System Events identifies the running app by its executable name. For
-  // stable VS Code that's "Code"; for Insiders, "Code - Insiders"; for forks
-  // we strip the "Visual Studio " prefix from appName.
+  // stable VS Code that's "Code"; for Insiders, "Code - Insiders"; for
+  // VS Code forks (Antigravity IDE, Cursor, …) the executable name matches
+  // appName modulo a stripped "Visual Studio " prefix.
   const processName = appName.replace(/^Visual Studio /, '');
 
   // Prefer workspaceName over folder basename: VS Code's default
@@ -280,7 +285,7 @@ function revealMacOS(
       accessibilityPromptShown = true;
       void vscode.window
         .showWarningMessage(
-          'Claude Code Manager needs Accessibility permission to switch between VS Code windows. Open System Settings → Privacy & Security → Accessibility and enable VS Code (or osascript), then try clicking again.',
+          `Claude Code Manager needs Accessibility permission to switch between ${appName} windows. Open System Settings → Privacy & Security → Accessibility and enable ${appName} (or osascript), then try clicking again.`,
           'Open Accessibility Settings'
         )
         .then((choice) => {
@@ -298,21 +303,6 @@ function revealMacOS(
 /** AppleScript-quote a string: wrap in double quotes and escape `"` and `\`. */
 function appleQuote(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function bundledCodeBin(): string | undefined {
-  // vscode.env.appRoot is e.g. .../Visual Studio Code.app/Contents/Resources/app
-  // — the bundled CLI is at <appRoot>/bin/code (or code.cmd on Windows).
-  const root = vscode.env.appRoot;
-  if (!root) return undefined;
-  const exe = process.platform === 'win32' ? 'code.cmd' : 'code';
-  const p = path.join(root, 'bin', exe);
-  try {
-    if (fs.existsSync(p)) return p;
-  } catch {
-    // ignore
-  }
-  return undefined;
 }
 
 function quote(s: string): string {

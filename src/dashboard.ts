@@ -411,7 +411,7 @@ export class DashboardPanel {
   function localCardHtml(s) {
     const isExt = s.kind === 'extension';
     const usage = usageLine(s.usage);
-    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code editor extension">Extension</span>' : '';
     const promptRow = isExt
       ? \`<div class="prompt-row">
           <input type="text" placeholder="Type prompts directly in the extension tab" disabled>
@@ -446,9 +446,9 @@ export class DashboardPanel {
   function externalCardHtml(s) {
     const isExt = s.kind === 'extension';
     const usage = usageLine(s.usage);
-    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code editor extension">Extension</span>' : '';
     return \`
-      <div class="card external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
+      <div class="card external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning editor window">
         <h2>
           \${escape(s.name)}
           <span class="status-pill s-\${s.status}">\${s.status}</span>

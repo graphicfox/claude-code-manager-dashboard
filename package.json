@@ -1,7 +1,7 @@
 {
   "name": "claude-code-manager",
   "displayName": "Claude Code Manager",
-  "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from within VS Code.",
+  "description": "Manage Claude Code CLI sessions: spawn, switch, monitor, and organize agent terminals from your editor.",
   "version": "0.3.0",
   "publisher": "kimmartini",
   "license": "MIT",
@@ -181,10 +181,10 @@
             "extension"
           ],
           "default": "terminal",
-          "description": "Default kind of session to create from 'New Session'. 'terminal' spawns the Claude Code CLI in an integrated terminal (full control). 'extension' opens a tab in the official Anthropic Claude Code VS Code extension; sessions are tracked here as shadow entries with limited actions.",
+          "description": "Default kind of session to create from 'New Session'. 'terminal' spawns the Claude Code CLI in an integrated terminal (full control). 'extension' opens a tab in the official Anthropic Claude Code editor extension; sessions are tracked here as shadow entries with limited actions.",
           "enumDescriptions": [
             "Spawn the `claude` CLI in a new integrated terminal",
-            "Open a tab in the official anthropic.claude-code extension via vscode://anthropic.claude-code/open"
+            "Open a tab in the official anthropic.claude-code extension via its URI handler (host-aware: vscode://, antigravity-ide://, …)"
           ]
         },
         "claudeCodeManager.cliPath": {
@@ -203,7 +203,7 @@
         "claudeCodeManager.shell": {
           "type": "string",
           "default": "",
-          "description": "Override shell for sessions. Leave empty to use VS Code's default integrated terminal shell."
+          "description": "Override shell for sessions. Leave empty to use the editor's default integrated terminal shell."
         },
         "claudeCodeManager.confirmKill": {
           "type": "boolean",

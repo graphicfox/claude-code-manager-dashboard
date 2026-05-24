@@ -486,7 +486,7 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
       <button class="s-\${st} \${s.status === st ? 'active' : ''}" data-set-status="\${st}" data-id="\${s.id}" title="Mark as \${LABELS[st]}">\${LABELS[st]}</button>
     \`).join('');
     const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
-    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code editor extension">Extension</span>' : '';
     const focusBtn = isExt
       ? (s.hasExtSessionId
         ? \`<button data-focus="\${s.id}" title="Focus the Claude Code extension tab for this session">Focus</button>\`
@@ -519,10 +519,10 @@ export class SessionWebviewProvider implements vscode.WebviewViewProvider {
 
   function externalCard(s) {
     const isExt = s.kind === 'extension';
-    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code VS Code extension">Extension</span>' : '';
+    const kindTag = isExt ? '<span class="kind-tag" title="Owned by the Claude Code editor extension">Extension</span>' : '';
     const usage = s.usageLine ? \`<div class="usage">\${escape(s.usageLine)}</div>\` : '';
     return \`
-      <div class="session external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning VS Code window">
+      <div class="session external s-\${s.status}" data-reveal-id="\${s.id}" data-window-id="\${escape(s.windowId || '')}" data-workspace-folder="\${escape(s.workspaceFolder || '')}" data-workspace-name="\${escape(s.workspaceName || '')}" title="Click to reveal in the owning editor window">
         <div class="row">
           <span class="name">\${escape(s.name)}</span>
           \${kindTag}
